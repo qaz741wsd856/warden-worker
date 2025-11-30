@@ -8,6 +8,7 @@ pub mod identity;
 pub mod import;
 pub mod purge;
 pub mod sync;
+pub mod twofactor;
 pub mod webauth;
 
 /// Shared helper for reading an environment variable into usize.

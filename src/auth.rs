@@ -22,6 +22,9 @@ pub struct Claims {
     pub amr: Vec<String>,
 }
 
+/// AuthUser extractor - provides (user_id, email) tuple
+pub struct AuthUser(pub String, pub String);
+
 impl FromRequestParts<Arc<Env>> for Claims
 {
     type Rejection = AppError;
@@ -49,5 +52,15 @@ impl FromRequestParts<Arc<Env>> for Claims
             .map_err(|_| AppError::Unauthorized("Invalid token".to_string()))?;
 
         Ok(token_data.claims)
+    }
+}
+
+impl FromRequestParts<Arc<Env>> for AuthUser
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<Env>) -> Result<Self, Self::Rejection> {
+        let claims = Claims::from_request_parts(parts, state).await?;
+        Ok(AuthUser(claims.sub, claims.email))
     }
 }

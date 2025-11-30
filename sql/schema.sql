@@ -1,4 +1,5 @@
 -- Drop tables if they exist to ensure a clean slate
+DROP TABLE IF EXISTS twofactor;
 DROP TABLE IF EXISTS folders;
 DROP TABLE IF EXISTS ciphers;
 DROP TABLE IF EXISTS users;
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     kdf_type INTEGER NOT NULL DEFAULT 0, -- 0 for PBKDF2
     kdf_iterations INTEGER NOT NULL DEFAULT 600000,
     security_stamp TEXT,
+    totp_recover TEXT, -- Recovery code for 2FA
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -46,4 +48,17 @@ CREATE TABLE IF NOT EXISTS folders (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- TwoFactor table for two-factor authentication
+-- Types: 0=Authenticator(TOTP), 1=Email, 5=Remember, 8=RecoveryCode
+CREATE TABLE IF NOT EXISTS twofactor (
+    uuid TEXT PRIMARY KEY NOT NULL,
+    user_uuid TEXT NOT NULL,
+    atype INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    data TEXT NOT NULL, -- JSON data specific to the 2FA type (e.g., TOTP secret)
+    last_used INTEGER NOT NULL DEFAULT 0, -- Unix timestamp or TOTP time step
+    FOREIGN KEY (user_uuid) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(user_uuid, atype)
 );

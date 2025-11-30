@@ -5,7 +5,7 @@ use axum::{
 use std::sync::Arc;
 use worker::Env;
 
-use crate::handlers::{accounts, ciphers, config, devices, emergency_access, folders, identity, import, sync, webauth};
+use crate::handlers::{accounts, ciphers, config, devices, emergency_access, folders, identity, import, sync, twofactor, webauth};
 
 pub fn api_router(env: Env) -> Router {
     let app_state = Arc::new(env);
@@ -106,5 +106,32 @@ pub fn api_router(env: Env) -> Router {
             "/api/webauthn",
             get(webauth::get_webauthn_credentials),
         )
+        // Two-factor authentication
+        .route("/api/two-factor", get(twofactor::get_twofactor))
+        .route(
+            "/api/two-factor/get-authenticator",
+            post(twofactor::get_authenticator),
+        )
+        .route(
+            "/api/two-factor/authenticator",
+            post(twofactor::activate_authenticator),
+        )
+        .route(
+            "/api/two-factor/authenticator",
+            put(twofactor::activate_authenticator_put),
+        )
+        .route(
+            "/api/two-factor/disable",
+            post(twofactor::disable_twofactor),
+        )
+        .route(
+            "/api/two-factor/disable",
+            put(twofactor::disable_twofactor_put),
+        )
+        .route(
+            "/api/two-factor/get-recover",
+            post(twofactor::get_recover),
+        )
+        .route("/api/two-factor/recover", post(twofactor::recover))
         .with_state(app_state)
 }

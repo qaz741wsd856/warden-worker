@@ -120,6 +120,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base32"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "022dfe9eb35f19ebbcb51e0b40a5ab759f46ad60cadf7297e0bd085afb50e076"
+
+[[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1193,6 +1199,7 @@ name = "warden-worker"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "base32",
  "base64 0.21.7",
  "chrono",
  "console_error_panic_hook",

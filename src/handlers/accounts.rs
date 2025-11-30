@@ -83,6 +83,7 @@ pub async fn register(
         kdf_type: payload.kdf,
         kdf_iterations: payload.kdf_iterations,
         security_stamp: Uuid::new_v4().to_string(),
+        totp_recover: None,
         created_at: now.clone(),
         updated_at: now,
     };

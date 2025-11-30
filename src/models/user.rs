@@ -19,6 +19,7 @@ pub struct User {
     pub kdf_type: i32,
     pub kdf_iterations: i32,
     pub security_stamp: String,
+    pub totp_recover: Option<String>, // Recovery code for 2FA
     pub created_at: String,
     pub updated_at: String,
 }
