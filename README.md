@@ -111,7 +111,7 @@ There are no immediate plans to implement these features. The primary goal of th
 
 6. **Set environment variables** as `Secret`
 
-- `ALLOWED_EMAILS` your-email@example.com
+- `ALLOWED_EMAILS` (Optional) Comma-separated list of allowed emails (e.g., `your-email@example.com`). If not set, any email can register.
 - `JWT_SECRET` a long random string
 - `JWT_REFRESH_SECRET` a long random string
 
@@ -156,7 +156,7 @@ Add the following secrets to your GitHub repository (`Settings > Secrets and var
 4.  **Monitor the deployment** in the Actions tab of your repository
 
 5.  **Set environment variables** in the Cloudflare console (following the command line deployment steps):
-    - `ALLOWED_EMAILS` your-email@example.com
+    - `ALLOWED_EMAILS` (Optional) Comma-separated list of allowed emails (e.g., `your-email@example.com`). If not set, any email can register.
     - `JWT_SECRET` a long random string
     - `JWT_REFRESH_SECRET` a long random string
 

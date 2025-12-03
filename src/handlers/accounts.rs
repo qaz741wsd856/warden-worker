@@ -48,18 +48,19 @@ pub async fn register(
     State(env): State<Arc<Env>>,
     Json(payload): Json<RegisterRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let allowed_emails = env
-        .secret("ALLOWED_EMAILS")
-        .map_err(|_| AppError::Internal)?;
-    let allowed_emails = allowed_emails
-        .as_ref()
-        .as_string()
-        .ok_or_else(|| AppError::Internal)?;
-    if allowed_emails
-        .split(",")
-        .all(|email| email.trim() != payload.email)
-    {
-        return Err(AppError::Unauthorized("Not allowed to signup".to_string()));
+    // Check ALLOWED_EMAILS if it's set and not empty
+    // If not set or empty, allow any email to register
+    if let Ok(allowed_emails_secret) = env.secret("ALLOWED_EMAILS") {
+        if let Some(allowed_emails_str) = allowed_emails_secret.as_ref().as_string() {
+            let allowed_emails = allowed_emails_str.trim();
+            if !allowed_emails.is_empty()
+                && allowed_emails
+                    .split(',')
+                    .all(|email| email.trim() != payload.email)
+            {
+                return Err(AppError::Unauthorized("Not allowed to signup".to_string()));
+            }
+        }
     }
 
     // Generate salt and hash the password with server-side PBKDF2
