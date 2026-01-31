@@ -124,9 +124,7 @@ mod bool_from_int {
 pub struct PreloginResponse {
     pub kdf: i32,
     pub kdf_iterations: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub kdf_memory: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub kdf_parallelism: Option<i32>,
 }
 
@@ -144,6 +142,13 @@ pub struct RegisterRequest {
     pub kdf_iterations: i32,
     pub kdf_memory: Option<i32>, // Argon2 memory parameter (15-1024 MB)
     pub kdf_parallelism: Option<i32>, // Argon2 parallelism parameter (1-16)
+}
+
+// For POST /accounts/password-hint request
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordHintRequest {
+    pub email: String,
 }
 
 #[derive(Debug, Deserialize)]

@@ -113,9 +113,25 @@ jobs:
           set -euo pipefail
           WRANGLER="npx --yes wrangler@${WRANGLER_VERSION}"
 
-          TABLE_COUNT=$($WRANGLER d1 execute vault1 --env dev --remote --command \
+          # Capture raw wrangler output so jq parse errors don't hide the real failure.
+          set +e
+          D1_OUT="$($WRANGLER d1 execute vault1 --env dev --remote --command \
             "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT IN ('d1_migrations');" \
-            --json | jq -r '.[0].results[0].cnt // 0')
+            --json 2>&1)"
+          D1_STATUS=$?
+          set -e
+          if [ $D1_STATUS -ne 0 ]; then
+            echo "❌ wrangler d1 execute failed (exit=$D1_STATUS). Raw output:"
+            echo "$D1_OUT"
+            exit $D1_STATUS
+          fi
+
+          TABLE_COUNT="$(printf '%s' "$D1_OUT" | jq -er 'if type=="array" and (length>0) and (.[0].results|type=="array") and (.[0].results|length>0) then (.[0].results[0].cnt // 0) else error("unexpected JSON shape") end' 2>/dev/null || true)"
+          if [ -z "${TABLE_COUNT}" ]; then
+            echo "❌ Unexpected JSON from wrangler (cannot extract table count). Raw output:"
+            echo "$D1_OUT"
+            exit 1
+          fi
 
           echo "Existing app table count: ${TABLE_COUNT}"
           if [ "${TABLE_COUNT}" = "0" ]; then

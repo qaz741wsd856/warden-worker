@@ -88,9 +88,9 @@ pub struct TokenResponse {
     kdf: i32,
     #[serde(rename = "KdfIterations")]
     kdf_iterations: i32,
-    #[serde(rename = "KdfMemory", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "KdfMemory")]
     kdf_memory: Option<i32>,
-    #[serde(rename = "KdfParallelism", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "KdfParallelism")]
     kdf_parallelism: Option<i32>,
     #[serde(rename = "ResetMasterPassword")]
     reset_master_password: bool,

@@ -47,6 +47,13 @@ function normalizeUsername(username) {
   return v ? v : null;
 }
 
+function normalizePathname(pathname) {
+  if (typeof pathname !== "string") return "/";
+  // Keep "/" unchanged; otherwise remove one or more trailing slashes.
+  if (pathname === "/") return "/";
+  return pathname.replace(/\/+$/, "");
+}
+
 async function getHeavyDoShardKey(request, url) {
   const pathname = url.pathname;
 
@@ -145,7 +152,10 @@ function parseDownloadPath(path) {
 // Main fetch handler
 export default {
   async fetch(request, env, ctx) {
+    // Normalize pathname to avoid trailing slashes
     const url = new URL(request.url);
+    url.pathname = normalizePathname(url.pathname);
+    request = new Request(url.toString(), request);
     const method = (request.method || "GET").toUpperCase();
 
     // Optional: route selected CPU-heavy endpoints to Durable Objects.

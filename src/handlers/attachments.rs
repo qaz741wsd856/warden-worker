@@ -25,8 +25,36 @@ use crate::{
 };
 
 const ATTACHMENTS_BUCKET: &str = "ATTACHMENTS_BUCKET";
+const ATTACHMENTS_KV: &str = "ATTACHMENTS_KV";
 const SIZE_LEEWAY_BYTES: i64 = 1024 * 1024; // 1 MiB
 const DEFAULT_ATTACHMENT_TTL_SECS: i64 = 300; // 5 minutes
+const KV_MAX_VALUE_BYTES: i64 = 25 * 1024 * 1024; // 25 MiB (KV hard limit)
+
+/// Storage backend for attachments
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum StorageBackend {
+    /// Cloudflare KV - no credit card required, 25MB limit per value
+    KV,
+    /// Cloudflare R2 - requires credit card, no practical size limit
+    R2,
+}
+
+/// Detect which storage backend is available.
+/// Priority: R2 if bound, otherwise KV.
+pub(crate) fn get_storage_backend(env: &Env) -> Option<StorageBackend> {
+    if env.bucket(ATTACHMENTS_BUCKET).is_ok() {
+        Some(StorageBackend::R2)
+    } else if env.kv(ATTACHMENTS_KV).is_ok() {
+        Some(StorageBackend::KV)
+    } else {
+        None
+    }
+}
+
+/// Check if using KV backend (for behavior differences)
+pub(crate) fn is_kv_backend(env: &Env) -> bool {
+    get_storage_backend(env) == Some(StorageBackend::KV)
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,8 +140,12 @@ pub async fn create_attachment_v2(
     Path(cipher_id): Path<String>,
     Json(payload): Json<AttachmentCreateRequest>,
 ) -> Result<Json<AttachmentUploadResponse>, AppError> {
-    // Require bucket; fail directly if missing
-    let _bucket = require_bucket(&env)?;
+    // Require storage backend; fail directly if missing
+    if !attachments_enabled(&env) {
+        return Err(AppError::BadRequest(
+            "Attachments are not enabled".to_string(),
+        ));
+    }
     let db = db::get_db(&env)?;
 
     let cipher = ensure_cipher_for_user(&db, &cipher_id, &claims.sub).await?;
@@ -203,7 +235,11 @@ pub async fn upload_attachment_v2_data(
     Path((cipher_id, attachment_id)): Path<(String, String)>,
     mut multipart: Multipart,
 ) -> Result<Json<()>, AppError> {
-    let bucket = require_bucket(&env)?;
+    if !attachments_enabled(&env) {
+        return Err(AppError::BadRequest(
+            "Attachments are not enabled".to_string(),
+        ));
+    }
     let db = db::get_db(&env)?;
 
     let _cipher = ensure_cipher_for_user(&db, &cipher_id, &claims.sub).await?;
@@ -219,17 +255,20 @@ pub async fn upload_attachment_v2_data(
         read_multipart(&mut multipart).await?;
     let actual_size = file_bytes.len() as i64;
 
-    // Validate actual size against declared value deviation
-    if let Err(e) = validate_size_within_declared(&pending, actual_size) {
-        query!(
-            &db,
-            "DELETE FROM attachments_pending WHERE id = ?1",
-            pending.id
-        )
-        .map_err(|_| AppError::Database)?
-        .run()
-        .await?;
-        return Err(e);
+    // For R2 backend: validate actual size against declared value deviation
+    // For KV backend: skip this check (we trust the actual upload size)
+    if !is_kv_backend(&env) {
+        if let Err(e) = validate_size_within_declared(&pending, actual_size) {
+            query!(
+                &db,
+                "DELETE FROM attachments_pending WHERE id = ?1",
+                pending.id
+            )
+            .map_err(|_| AppError::Database)?
+            .run()
+            .await?;
+            return Err(e);
+        }
     }
 
     // Validate capacity limits (replace with actual size)
@@ -245,14 +284,8 @@ pub async fn upload_attachment_v2_data(
         pending.akey = Some(k);
     }
 
-    // Save to R2
-    upload_to_r2(
-        &bucket,
-        &pending.r2_key(),
-        content_type,
-        file_bytes.to_vec(),
-    )
-    .await?;
+    // Save to storage (KV or R2)
+    upload_to_storage(&env, &pending.r2_key(), content_type, file_bytes.to_vec()).await?;
 
     // Finalize: move pending -> attachments and touch timestamps
     let now = now_string();
@@ -297,7 +330,11 @@ pub async fn upload_attachment_legacy(
     Path(cipher_id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Json<Cipher>, AppError> {
-    let bucket = require_bucket(&env)?;
+    if !attachments_enabled(&env) {
+        return Err(AppError::BadRequest(
+            "Attachments are not enabled".to_string(),
+        ));
+    }
     let db = db::get_db(&env)?;
 
     let cipher = ensure_cipher_for_user(&db, &cipher_id, &claims.sub).await?;
@@ -336,9 +373,9 @@ pub async fn upload_attachment_legacy(
     .run()
     .await?;
 
-    // Save to R2
-    upload_to_r2(
-        &bucket,
+    // Save to storage (KV or R2)
+    upload_to_storage(
+        &env,
         &format!("{}/{}", cipher_id, attachment_id),
         content_type,
         file_bytes.to_vec(),
@@ -363,7 +400,11 @@ pub async fn get_attachment(
     Extension(BaseUrl(base_url)): Extension<BaseUrl>,
     Path((cipher_id, attachment_id)): Path<(String, String)>,
 ) -> Result<Json<AttachmentResponse>, AppError> {
-    let _bucket = require_bucket(&env)?;
+    if !attachments_enabled(&env) {
+        return Err(AppError::BadRequest(
+            "Attachments are not enabled".to_string(),
+        ));
+    }
     let db = db::get_db(&env)?;
 
     let cipher = ensure_cipher_for_user(&db, &cipher_id, &claims.sub).await?;
@@ -386,7 +427,11 @@ pub async fn delete_attachment(
     State(env): State<Arc<Env>>,
     Path((cipher_id, attachment_id)): Path<(String, String)>,
 ) -> Result<Json<AttachmentDeleteResponse>, AppError> {
-    let bucket = require_bucket(&env)?;
+    if !attachments_enabled(&env) {
+        return Err(AppError::BadRequest(
+            "Attachments are not enabled".to_string(),
+        ));
+    }
     let db = db::get_db(&env)?;
 
     let cipher = ensure_cipher_for_user(&db, &cipher_id, &claims.sub).await?;
@@ -398,8 +443,8 @@ pub async fn delete_attachment(
         ));
     }
 
-    // Delete R2 object; ignore missing objects
-    delete_r2_objects(&bucket, &[attachment.r2_key()]).await?;
+    // Delete storage object; ignore missing objects
+    delete_storage_objects(&env, &[attachment.r2_key()]).await?;
 
     query!(&db, "DELETE FROM attachments WHERE id = ?1", attachment.id)
         .map_err(|_| AppError::Database)?
@@ -453,12 +498,7 @@ pub async fn hydrate_cipher_attachments(
 }
 
 pub(crate) fn attachments_enabled(env: &Env) -> bool {
-    env.bucket(ATTACHMENTS_BUCKET).is_ok()
-}
-
-pub(crate) fn require_bucket(env: &Env) -> Result<Bucket, AppError> {
-    env.bucket(ATTACHMENTS_BUCKET)
-        .map_err(|_| AppError::BadRequest("Attachments are not enabled".to_string()))
+    get_storage_backend(env).is_some()
 }
 
 fn is_not_found_error(err: &worker::Error) -> bool {
@@ -475,6 +515,30 @@ pub(crate) async fn delete_r2_objects(bucket: &Bucket, keys: &[String]) -> Resul
         }
     }
     Ok(())
+}
+
+/// Delete objects from storage (KV or R2 based on configured backend)
+pub(crate) async fn delete_storage_objects(env: &Env, keys: &[String]) -> Result<(), AppError> {
+    match get_storage_backend(env) {
+        Some(StorageBackend::KV) => {
+            let kv = env.kv(ATTACHMENTS_KV).map_err(|_| AppError::Internal)?;
+            for key in keys {
+                // KV delete is idempotent - no error if key doesn't exist
+                if let Err(e) = kv.delete(key).await {
+                    log::error!("KV delete error for key '{}': {:?}", key, e);
+                    return Err(AppError::Internal);
+                }
+            }
+            Ok(())
+        }
+        Some(StorageBackend::R2) => {
+            let bucket = env
+                .bucket(ATTACHMENTS_BUCKET)
+                .map_err(|_| AppError::Internal)?;
+            delete_r2_objects(&bucket, keys).await
+        }
+        None => Ok(()), // No-op if attachments not enabled
+    }
 }
 
 fn map_rows_to_keys(rows: Vec<AttachmentKeyRow>) -> Vec<String> {
@@ -672,6 +736,40 @@ async fn upload_to_r2(
     Ok(())
 }
 
+/// Upload data to storage (KV or R2 based on configured backend)
+async fn upload_to_storage(
+    env: &Env,
+    key: &str,
+    _content_type: Option<String>,
+    data: Vec<u8>,
+) -> Result<(), AppError> {
+    match get_storage_backend(env) {
+        Some(StorageBackend::KV) => {
+            let kv = env.kv(ATTACHMENTS_KV).map_err(|_| AppError::Internal)?;
+            // KV put_bytes stores raw binary data
+            if let Err(e) = kv
+                .put_bytes(key, &data)
+                .map_err(|_| AppError::Internal)?
+                .execute()
+                .await
+            {
+                log::error!("KV put error for key '{}': {:?}", key, e);
+                return Err(AppError::Internal);
+            }
+            Ok(())
+        }
+        Some(StorageBackend::R2) => {
+            let bucket = env
+                .bucket(ATTACHMENTS_BUCKET)
+                .map_err(|_| AppError::Internal)?;
+            upload_to_r2(&bucket, key, _content_type, data).await
+        }
+        None => Err(AppError::BadRequest(
+            "Attachments are not enabled".to_string(),
+        )),
+    }
+}
+
 async fn read_multipart(
     multipart: &mut Multipart,
 ) -> Result<(Bytes, Option<String>, Option<String>, Option<String>), AppError> {
@@ -823,6 +921,14 @@ async fn enforce_limits(
         ));
     }
 
+    // KV has a hard 25MB limit per value
+    if is_kv_backend(env) && new_size > KV_MAX_VALUE_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "Attachment size exceeds KV limit (max {}MB)",
+            KV_MAX_VALUE_BYTES / 1024 / 1024
+        )));
+    }
+
     let max_bytes = attachment_max_bytes(env)?;
     if let Some(max_bytes) = max_bytes {
         if new_size as u64 > max_bytes {
@@ -832,6 +938,7 @@ async fn enforce_limits(
         }
     }
 
+    // Check total storage limit
     let limit_bytes = total_limit_bytes(env)?;
     if let Some(limit_bytes) = limit_bytes {
         let used = user_attachment_usage(db, user_id, exclude_attachment).await?;

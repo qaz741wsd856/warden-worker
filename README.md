@@ -15,7 +15,7 @@ Warden aims to solve this problem by leveraging the Cloudflare Workers ecosystem
 ## Features
 
 * **Core Vault Functionality:** Create, read, update, and delete ciphers and folders.
-* **File Attachments:** Optional Cloudflare R2 storage for attachments.
+* **File Attachments:** Optional Cloudflare KV or R2 storage for attachments.
 * **TOTP Support:** Store and generate Time-based One-Time Passwords.
 * **Bitwarden Compatible:** Works with official Bitwarden clients.
 * **Free to Host:** Runs on Cloudflare's free tier.
@@ -25,7 +25,17 @@ Warden aims to solve this problem by leveraging the Cloudflare Workers ecosystem
 
 ### Attachments Support
 
-Warden supports file attachments using Cloudflare R2 storage. Attachments are optional and require manual configuration to enable. See the deployment guide for setup details. Be aware that R2 may incur additional costs; see [Cloudflare R2 pricing](https://developers.cloudflare.com/r2/pricing/).
+Warden supports file attachments using either **Cloudflare KV** or **Cloudflare R2** as the storage backend:
+
+| Feature | KV | R2 |
+|---------|----|----|  
+| Max file size | **25 MB** (hard limit) | 100 MB (By request body size limit of Workers) |
+| Credit card required | **No** | Yes |
+| Streaming I/O | Yes | Yes |
+
+**Backend selection:** R2 takes priority — if R2 is configured, it will be used. Otherwise, KV is used.
+
+See the [deployment guide](docs/deployment.md) for setup details. R2 may incur additional costs; see [Cloudflare R2 pricing](https://developers.cloudflare.com/r2/pricing/).
 
 ## Current Status
 
@@ -81,7 +91,8 @@ The frontend is bundled with the Worker using [Cloudflare Workers Static Assets]
 > [!NOTE]
 > Migrating from separate frontend deployment? If you previously deployed the frontend separately to Cloudflare Pages, you can delete the `warden-frontend` Pages project and re-setup the router for the worker. The frontend is now bundled with the Worker and no longer requires a separate deployment.
 
-> [!WARNING] The web vault frontend comes from Vaultwarden and therefore exposes many advanced UI features, but most of them are non-functional. See [Current Status](#current-status).
+> [!WARNING]
+> The web vault frontend comes from Vaultwarden and therefore exposes many advanced UI features, but most of them are non-functional. See [Current Status](#current-status).
 
 ## Configure Custom Domain (Optional)
 
@@ -102,7 +113,8 @@ If you want to use a custom domain instead of the default `*.workers.dev` domain
    - **TTL:** Auto
 5. Click **Save**
 
-> ⚠️ **Important:** The **Proxy status must be "Proxied"** (orange cloud). If it shows "DNS only" (gray cloud), Worker routes will not work.
+> [!IMPORTANT]
+> The **Proxy status must be "Proxied"** (orange cloud). If it shows "DNS only" (gray cloud), Worker routes will not work.
 
 ### Step 2: Add Worker Route
 
@@ -135,7 +147,8 @@ namespace_id = "1001"
 simple = { limit = 5, period = 60 }
 ```
 
-> [!NOTE] The `period` must be either `10` or `60` seconds. See [Cloudflare documentation](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) for details.
+> [!NOTE]
+> The `period` must be either `10` or `60` seconds. See [Cloudflare documentation](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) for details.
 
 If the binding is missing, requests proceed without rate limiting (graceful degradation).
 
@@ -243,7 +256,8 @@ ls .wrangler/state/v3/d1/
 sqlite3 .wrangler/state/v3/d1/miniflare-D1DatabaseObject/*.sqlite
 ```
 
-> [!NOTE] Local dev requires Node.js and Wrangler. The Worker runs in a simulated environment via [workerd](https://github.com/cloudflare/workerd).
+> [!NOTE]
+> Local dev requires Node.js and Wrangler. The Worker runs in a simulated environment via [workerd](https://github.com/cloudflare/workerd).
 
 ## Contributing
 

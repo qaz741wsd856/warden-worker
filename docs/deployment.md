@@ -19,7 +19,7 @@ This page covers the two deployment paths. Pick the one that fits your workflow 
 
 3. **(Optional) Enable R2 Bucket for Attachments:**
 
-   If you want to use file attachments:
+   Warden uses KV for attachments storage by default. If you want to use R2 as storage backend:
 
    ```bash
    # Create the production bucket
@@ -28,7 +28,7 @@ This page covers the two deployment paths. Pick the one that fits your workflow 
 
    Then enable the R2 binding in `wrangler.toml` by uncommenting the R2 bucket configuration sections.
 
-   **Note:** Attachments are optional. If you don't enable R2 bindings, attachment functionality will be disabled but all other features will work normally.
+   **Note:** Attachments are optional. If you remove both KV and R2 bindings, attachment functionality will be disabled but all other features will work normally.
 
 4. **Configure your Database ID:**
 
@@ -148,9 +148,11 @@ To avoid bundling a large JSON file into the Worker, the dataset can be stored i
 
 If you skip seeding, `/api/settings/domains` and `/api/sync` will return `globalEquivalentDomains: []`.
 
-> [!NOTE] The `CLOUDFLARE_API_TOKEN` must have **both** Worker and D1 permissions:
+> [!NOTE]
+> The `CLOUDFLARE_API_TOKEN` must have **both** Worker and D1 permissions:
 > - **Edit Cloudflare Workers** - Required for deploying the Worker
 > - **Edit D1** - Required for database migrations and backups
+> - **Edit KV** - Required for attachments storage (if using KV)
 > 
 > When creating the API token in Cloudflare Dashboard, make sure to add both permissions under "Account" → "Cloudflare Workers" and "Account" → "D1".
 
@@ -168,7 +170,7 @@ If you skip seeding, `/api/settings/domains` and `/api/sync` will return `global
 
 3. **(Optional) Enable R2 bucket for attachments:**
 
-   If you want to use file attachments:
+   Warden uses KV for attachments storage by default. If you want to use R2 as storage backend:
 
    1. **Create R2 buckets in Cloudflare Dashboard before running the action:**
       - Go to **Storage & databases** → **R2** → **Create bucket**

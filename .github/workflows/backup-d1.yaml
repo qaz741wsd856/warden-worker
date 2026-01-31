@@ -1,4 +1,4 @@
-name: Backup D1 Database to S3
+name: Backup D1 Database (S3/WebDAV)
 
 on:
     schedule:
@@ -16,7 +16,7 @@ on:
                     - dev
 
 env:
-    BACKUP_RETENTION_DAYS: 30
+    BACKUP_RETENTION_DAYS: ${{ secrets.BACKUP_RETENTION_DAYS || 30 }}
 
 jobs:
     backup-production:
@@ -25,6 +25,35 @@ jobs:
         if: github.event_name == 'schedule' || github.event.inputs.environment == 'production'
 
         steps:
+            - name: Check backup backends availability
+              id: backends
+              env:
+                  S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+                  S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+                  S3_BUCKET: ${{ secrets.S3_BUCKET }}
+                  S3_REGION: ${{ secrets.S3_REGION }}
+                  WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
+                  WEBDAV_USER: ${{ secrets.WEBDAV_USER }}
+                  WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
+              run: |
+                  # Check S3 backend
+                  if [[ -n "$S3_ACCESS_KEY_ID" && -n "$S3_SECRET_ACCESS_KEY" && -n "$S3_BUCKET" && -n "$S3_REGION" ]]; then
+                    echo "S3_ENABLED=true" >> $GITHUB_OUTPUT
+                    echo "✅ S3 backend: enabled"
+                  else
+                    echo "S3_ENABLED=false" >> $GITHUB_OUTPUT
+                    echo "⚠️ S3 backend: disabled (missing credentials)"
+                  fi
+                  
+                  # Check WebDAV backend
+                  if [[ -n "$WEBDAV_URL" && -n "$WEBDAV_USER" && -n "$WEBDAV_PASSWORD" ]]; then
+                    echo "WEBDAV_ENABLED=true" >> $GITHUB_OUTPUT
+                    echo "✅ WebDAV backend: enabled"
+                  else
+                    echo "WEBDAV_ENABLED=false" >> $GITHUB_OUTPUT
+                    echo "⚠️ WebDAV backend: disabled (missing credentials)"
+                  fi
+
             - name: Get current date
               id: date
               run: echo "date=$(date +'%Y-%m-%d_%H-%M-%S')" >> $GITHUB_OUTPUT
@@ -83,6 +112,7 @@ jobs:
                   fi
 
             - name: Upload to S3
+              if: steps.backends.outputs.S3_ENABLED == 'true'
               env:
                   AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
                   AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
@@ -108,7 +138,8 @@ jobs:
                   
                   echo "✅ Backup uploaded to S3: s3://${{ secrets.S3_BUCKET }}/warden-worker/production/$BACKUP_FILE"
 
-            - name: Cleanup old backups
+            - name: Cleanup old S3 backups
+              if: steps.backends.outputs.S3_ENABLED == 'true'
               env:
                   AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
                   AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
@@ -134,12 +165,86 @@ jobs:
                   
                   echo "✅ Cleanup completed"
 
+            - name: Setup rclone
+              if: steps.backends.outputs.WEBDAV_ENABLED == 'true'
+              uses: AnimMouse/setup-rclone@v1
+
+            - name: Configure rclone (WebDAV)
+              if: steps.backends.outputs.WEBDAV_ENABLED == 'true'
+              env:
+                  WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
+                  WEBDAV_VENDOR: ${{ secrets.WEBDAV_VENDOR || 'other' }}
+                  WEBDAV_USER: ${{ secrets.WEBDAV_USER }}
+                  WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
+              run: |
+                  mkdir -p ~/.config/rclone
+                  RCLONE_WEBDAV_PASS="$(rclone obscure "$WEBDAV_PASSWORD")"
+
+                  cat > ~/.config/rclone/rclone.conf <<EOF
+                  [webdav]
+                  type = webdav
+                  url = $WEBDAV_URL
+                  vendor = $WEBDAV_VENDOR
+                  user = $WEBDAV_USER
+                  pass = $RCLONE_WEBDAV_PASS
+                  EOF
+
+            - name: Upload to WebDAV
+              if: steps.backends.outputs.WEBDAV_ENABLED == 'true'
+              env:
+                  BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+                  WEBDAV_BASE_PATH: ${{ secrets.WEBDAV_BASE_PATH || 'warden-worker' }}
+              run: |
+                  if [ -n "$BACKUP_ENCRYPTION_KEY" ]; then
+                    BACKUP_FILE="vault1_prod_${{ steps.date.outputs.date }}.sql.gz.enc"
+                  else
+                    BACKUP_FILE="vault1_prod_${{ steps.date.outputs.date }}.sql.gz"
+                  fi
+
+                  rclone copyto "$BACKUP_FILE" "webdav:${WEBDAV_BASE_PATH}/production/$BACKUP_FILE"
+
+                  echo "✅ Backup uploaded to WebDAV: webdav:${WEBDAV_BASE_PATH}/production/$BACKUP_FILE"
+
+                  # Cleanup old backups
+                  rclone delete "webdav:${WEBDAV_BASE_PATH}/production/" -v --min-age ${{ env.BACKUP_RETENTION_DAYS }}d
+
+                  echo "✅ Cleanup completed"
+
     backup-dev:
         name: Backup Dev D1 Database
         runs-on: ubuntu-latest
         if: github.event.inputs.environment == 'dev'
 
         steps:
+            - name: Check backup backends availability
+              id: backends
+              env:
+                  S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+                  S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+                  S3_BUCKET: ${{ secrets.S3_BUCKET }}
+                  S3_REGION: ${{ secrets.S3_REGION }}
+                  WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
+                  WEBDAV_USER: ${{ secrets.WEBDAV_USER }}
+                  WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
+              run: |
+                  # Check S3 backend
+                  if [[ -n "$S3_ACCESS_KEY_ID" && -n "$S3_SECRET_ACCESS_KEY" && -n "$S3_BUCKET" && -n "$S3_REGION" ]]; then
+                    echo "S3_ENABLED=true" >> $GITHUB_OUTPUT
+                    echo "✅ S3 backend: enabled"
+                  else
+                    echo "S3_ENABLED=false" >> $GITHUB_OUTPUT
+                    echo "⚠️ S3 backend: disabled (missing credentials)"
+                  fi
+                  
+                  # Check WebDAV backend
+                  if [[ -n "$WEBDAV_URL" && -n "$WEBDAV_USER" && -n "$WEBDAV_PASSWORD" ]]; then
+                    echo "WEBDAV_ENABLED=true" >> $GITHUB_OUTPUT
+                    echo "✅ WebDAV backend: enabled"
+                  else
+                    echo "WEBDAV_ENABLED=false" >> $GITHUB_OUTPUT
+                    echo "⚠️ WebDAV backend: disabled (missing credentials)"
+                  fi
+
             - name: Get current date
               id: date
               run: echo "date=$(date +'%Y-%m-%d_%H-%M-%S')" >> $GITHUB_OUTPUT
@@ -155,7 +260,7 @@ jobs:
               run: |
                   DB_NAME=$(npx wrangler d1 list --json | jq -r '.[] | select(.uuid == "${{ secrets.D1_DATABASE_ID_DEV }}") | .name')
                   if [ -z "$DB_NAME" ]; then
-                    echo "❌ Error: Could not find database with D1_DATABASE_ID_DEV secret
+                    echo "❌ Error: Could not find database with D1_DATABASE_ID_DEV secret"
                     exit 1
                   fi
                   echo "Found database name"
@@ -197,6 +302,7 @@ jobs:
                   fi
 
             - name: Upload to S3
+              if: steps.backends.outputs.S3_ENABLED == 'true'
               env:
                   AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
                   AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
@@ -221,7 +327,8 @@ jobs:
                   
                   echo "✅ Backup uploaded to S3: s3://${{ secrets.S3_BUCKET }}/warden-worker/dev/$BACKUP_FILE"
 
-            - name: Cleanup old backups
+            - name: Cleanup old S3 backups
+              if: steps.backends.outputs.S3_ENABLED == 'true'
               env:
                   AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
                   AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
@@ -244,4 +351,49 @@ jobs:
                     fi
                   done
                   
+                  echo "✅ Cleanup completed"
+
+            - name: Setup rclone
+              if: steps.backends.outputs.WEBDAV_ENABLED == 'true'
+              uses: AnimMouse/setup-rclone@v1
+
+            - name: Configure rclone (WebDAV)
+              if: steps.backends.outputs.WEBDAV_ENABLED == 'true'
+              env:
+                  WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
+                  WEBDAV_VENDOR: ${{ secrets.WEBDAV_VENDOR || 'other' }}
+                  WEBDAV_USER: ${{ secrets.WEBDAV_USER }}
+                  WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
+              run: |
+                  mkdir -p ~/.config/rclone
+                  RCLONE_WEBDAV_PASS="$(rclone obscure "$WEBDAV_PASSWORD")"
+
+                  cat > ~/.config/rclone/rclone.conf <<EOF
+                  [webdav]
+                  type = webdav
+                  url = $WEBDAV_URL
+                  vendor = $WEBDAV_VENDOR
+                  user = $WEBDAV_USER
+                  pass = $RCLONE_WEBDAV_PASS
+                  EOF
+
+            - name: Upload to WebDAV
+              if: steps.backends.outputs.WEBDAV_ENABLED == 'true'
+              env:
+                  BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+                  WEBDAV_BASE_PATH: ${{ secrets.WEBDAV_BASE_PATH || 'warden-worker' }}
+              run: |
+                  if [ -n "$BACKUP_ENCRYPTION_KEY" ]; then
+                    BACKUP_FILE="vault1_dev_${{ steps.date.outputs.date }}.sql.gz.enc"
+                  else
+                    BACKUP_FILE="vault1_dev_${{ steps.date.outputs.date }}.sql.gz"
+                  fi
+
+                  rclone copyto "$BACKUP_FILE" "webdav:${WEBDAV_BASE_PATH}/dev/$BACKUP_FILE"
+
+                  echo "✅ Backup uploaded to WebDAV: webdav:${WEBDAV_BASE_PATH}/dev/$BACKUP_FILE"
+
+                  # Cleanup old backups
+                  rclone delete "webdav:${WEBDAV_BASE_PATH}/dev/" -v --min-age ${{ env.BACKUP_RETENTION_DAYS }}d
+
                   echo "✅ Cleanup completed"

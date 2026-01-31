@@ -63,11 +63,11 @@ async function verifyJwt(token, secret) {
   if (!payload || typeof payload !== "object") {
     throw new Error("Invalid token payload");
   }
-  
+
   if (typeof payload.exp !== "number") {
     throw new Error("Invalid token exp");
   }
-  
+
   const now = Math.floor(Date.now() / 1000);
   if (payload.exp < now - JWT_VALIDATION_LEEWAY_SECS) {
     throw new Error("Token expired");
@@ -107,6 +107,26 @@ function getEnvVar(env, name, defaultValue = null) {
   } catch {
     return defaultValue;
   }
+}
+
+// Storage backend constants
+const KV_MAX_VALUE_BYTES = 25 * 1024 * 1024; // 25 MiB (KV hard limit)
+
+// Detect which storage backend is available.
+// Priority: R2 if bound, otherwise KV.
+function getStorageBackend(env) {
+  if (env.ATTACHMENTS_BUCKET) {
+    return "r2";
+  }
+  if (env.ATTACHMENTS_KV) {
+    return "kv";
+  }
+  return null;
+}
+
+// Check if using KV backend (for behavior differences)
+function isKvBackend(env) {
+  return getStorageBackend(env) === "kv";
 }
 
 // Get attachment size limits from env
@@ -163,11 +183,17 @@ async function enforceLimits(db, env, userId, newSize, excludeAttachmentId) {
     throw new Error("Attachment size cannot be negative");
   }
 
+  // KV has a hard 25MB limit per value
+  if (isKvBackend(env) && newSize > KV_MAX_VALUE_BYTES) {
+    throw new Error(`Attachment size exceeds KV limit (max ${KV_MAX_VALUE_BYTES / 1024 / 1024}MB)`);
+  }
+
   const maxBytes = getAttachmentMaxBytes(env);
   if (maxBytes !== null && newSize > maxBytes) {
     throw new Error("Attachment size exceeds limit");
   }
 
+  // Check total storage limit
   const limitBytes = getTotalLimitBytes(env);
   if (limitBytes !== null) {
     const used = await getUserAttachmentUsage(db, userId, excludeAttachmentId);
@@ -178,11 +204,11 @@ async function enforceLimits(db, env, userId, newSize, excludeAttachmentId) {
   }
 }
 
-// Handle azure-upload with zero-copy streaming
+// Handle azure-upload with zero-copy streaming (R2) or arrayBuffer (KV)
 export async function handleAzureUpload(request, env, cipherId, attachmentId, token) {
-  // Get R2 bucket
-  const bucket = env.ATTACHMENTS_BUCKET;
-  if (!bucket) {
+  // Check storage backend
+  const backend = getStorageBackend(env);
+  if (!backend) {
     return new Response(JSON.stringify({ error: "Attachments are not enabled" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
@@ -297,46 +323,63 @@ export async function handleAzureUpload(request, env, cipherId, attachmentId, to
     });
   }
 
-  // Build R2 key
-  const r2Key = `${cipherId}/${attachmentId}`;
+  // Build storage key
+  const storageKey = `${cipherId}/${attachmentId}`;
+  let uploadedSize;
 
-  // Prepare R2 put options
-  const putOptions = {};
-  const contentType = request.headers.get("Content-Type");
-  if (contentType) {
-    putOptions.httpMetadata = { contentType };
-  }
-
-  // Upload to R2 directly using request.body (zero-copy streaming)
-  let r2Object;
-  try {
-    r2Object = await bucket.put(r2Key, request.body, putOptions);
-  } catch (err) {
-    // Try to clean up on failure
+  if (backend === "kv") {
+    // KV backend: streaming upload (KV.put accepts ReadableStream)
+    // Note: KV doesn't return the uploaded size, so we trust Content-Length
+    const kv = env.ATTACHMENTS_KV;
     try {
-      await bucket.delete(r2Key);
-    } catch {
-      // Ignore cleanup errors
+      await kv.put(storageKey, request.body);
+    } catch (err) {
+      return new Response(JSON.stringify({ error: `Upload failed: ${err.message}` }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
-    return new Response(JSON.stringify({ error: `Upload failed: ${err.message}` }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+    // KV doesn't return actual size, trust Content-Length
+    uploadedSize = contentLength;
+  } else {
+    // R2 backend: streaming upload (zero-copy)
+    const bucket = env.ATTACHMENTS_BUCKET;
+    const putOptions = {};
+    const contentType = request.headers.get("Content-Type");
+    if (contentType) {
+      putOptions.httpMetadata = { contentType };
+    }
 
-  const uploadedSize = r2Object.size;
-
-  // Verify uploaded size matches Content-Length
-  if (uploadedSize !== contentLength) {
+    let r2Object;
     try {
-      await bucket.delete(r2Key);
-    } catch {
-      // Ignore cleanup errors
+      r2Object = await bucket.put(storageKey, request.body, putOptions);
+    } catch (err) {
+      // Try to clean up on failure
+      try {
+        await bucket.delete(storageKey);
+      } catch {
+        // Ignore cleanup errors
+      }
+      return new Response(JSON.stringify({ error: `Upload failed: ${err.message}` }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
-    return new Response(JSON.stringify({ error: "Content-Length does not match uploaded size" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+
+    uploadedSize = r2Object.size;
+
+    // Verify uploaded size matches Content-Length
+    if (uploadedSize !== contentLength) {
+      try {
+        await bucket.delete(storageKey);
+      } catch {
+        // Ignore cleanup errors
+      }
+      return new Response(JSON.stringify({ error: "Content-Length does not match uploaded size" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
   }
 
   // Finalize upload: move pending -> attachments and touch revision timestamps
@@ -364,11 +407,11 @@ export async function handleAzureUpload(request, env, cipherId, attachmentId, to
   return new Response(null, { status: 201 });
 }
 
-// Handle download with zero-copy streaming
+// Handle download with zero-copy streaming (R2) or ArrayBuffer (KV)
 export async function handleDownload(request, env, cipherId, attachmentId, token) {
-  // Get R2 bucket
-  const bucket = env.ATTACHMENTS_BUCKET;
-  if (!bucket) {
+  // Check storage backend
+  const backend = getStorageBackend(env);
+  if (!backend) {
     return new Response(JSON.stringify({ error: "Attachments are not enabled" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
@@ -442,27 +485,44 @@ export async function handleDownload(request, env, cipherId, attachmentId, token
     });
   }
 
-  // Build R2 key
-  const r2Key = `${cipherId}/${attachmentId}`;
+  // Build storage key
+  const storageKey = `${cipherId}/${attachmentId}`;
 
-  // Get object from R2
-  const r2Object = await bucket.get(r2Key);
-  if (!r2Object) {
-    return new Response(JSON.stringify({ error: "Attachment not found in storage" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
+  if (backend === "kv") {
+    // KV backend: streaming download
+    // Note: KV stream doesn't provide size info, use attachment.file_size from DB
+    const kv = env.ATTACHMENTS_KV;
+    const stream = await kv.get(storageKey, { type: "stream" });
+    if (!stream) {
+      return new Response(JSON.stringify({ error: "Attachment not found in storage" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const headers = new Headers();
+    headers.set("Content-Type", "application/octet-stream");
+    headers.set("Content-Length", attachment.file_size.toString());
+
+    return new Response(stream, { status: 200, headers });
+  } else {
+    // R2 backend: streaming download (zero-copy)
+    const bucket = env.ATTACHMENTS_BUCKET;
+    const r2Object = await bucket.get(storageKey);
+    if (!r2Object) {
+      return new Response(JSON.stringify({ error: "Attachment not found in storage" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // Build response headers
+    const headers = new Headers();
+    const contentType = r2Object.httpMetadata?.contentType || "application/octet-stream";
+    headers.set("Content-Type", contentType);
+    headers.set("Content-Length", r2Object.size.toString());
+
+    // Return response with R2 object body directly - zero-copy streaming
+    return new Response(r2Object.body, { status: 200, headers });
   }
-
-  // Build response headers
-  const headers = new Headers();
-  const contentType = r2Object.httpMetadata?.contentType || "application/octet-stream";
-  headers.set("Content-Type", contentType);
-  headers.set("Content-Length", r2Object.size.toString());
-
-  // Return response with R2 object body directly - zero-copy streaming
-  return new Response(r2Object.body, {
-    status: 200,
-    headers,
-  });
 }

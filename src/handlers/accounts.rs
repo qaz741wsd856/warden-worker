@@ -18,8 +18,8 @@ use crate::{
         sync::Profile,
         user::{
             AvatarData, ChangeKdfRequest, ChangePasswordRequest, MasterPasswordUnlockData,
-            PasswordOrOtpData, PreloginResponse, ProfileData, RegisterRequest, RotateKeyRequest,
-            User,
+            PasswordHintRequest, PasswordOrOtpData, PreloginResponse, ProfileData, RegisterRequest,
+            RotateKeyRequest, User,
         },
     },
 };
@@ -311,6 +311,62 @@ pub async fn send_verification_email() -> Result<Json<String>, AppError> {
     Ok(Json("fixed-token-to-mock".to_string()))
 }
 
+/// POST /api/accounts/password-hint
+///
+/// Bitwarden normally sends the master password hint via email. This project does not implement
+/// email delivery, so we return the hint directly.
+#[worker::send]
+pub async fn password_hint(
+    State(env): State<Arc<Env>>,
+    headers: HeaderMap,
+    Json(payload): Json<PasswordHintRequest>,
+) -> Result<Json<Value>, AppError> {
+    // Basic rate limit by IP to slow down bulk email enumeration attempts.
+    if let Ok(rate_limiter) = env.rate_limiter("LOGIN_RATE_LIMITER") {
+        let ip = headers
+            .get("cf-connecting-ip")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown");
+        let rate_limit_key = format!("password-hint:{}", ip);
+        if let Ok(outcome) = rate_limiter.limit(rate_limit_key).await {
+            if !outcome.success {
+                return Err(AppError::TooManyRequests(
+                    "Too many requests. Please try again later.".to_string(),
+                ));
+            }
+        }
+    }
+
+    const NO_HINT: &str = "Sorry, you have no password hint...";
+
+    let db = db::get_db(&env)?;
+    let email = payload.email.to_lowercase();
+
+    let hint: Option<String> = db
+        .prepare("SELECT master_password_hint FROM users WHERE email = ?1")
+        .bind(&[email.into()])?
+        .first(Some("master_password_hint"))
+        .await
+        .map_err(|_| AppError::Database)?;
+
+    let hint = hint.and_then(|h| {
+        let trimmed = h.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    if let Some(hint) = hint {
+        return Err(AppError::BadRequest(format!(
+            "Your password hint is: {hint}"
+        )));
+    }
+
+    Err(AppError::BadRequest(NO_HINT.to_string()))
+}
+
 #[worker::send]
 pub async fn revision_date(
     claims: Claims,
@@ -528,9 +584,8 @@ pub async fn delete_account(
     }
 
     if attachments::attachments_enabled(env.as_ref()) {
-        let bucket = attachments::require_bucket(env.as_ref())?;
         let keys = attachments::list_attachment_keys_for_user(&db, user_id).await?;
-        attachments::delete_r2_objects(&bucket, &keys).await?;
+        attachments::delete_storage_objects(env.as_ref(), &keys).await?;
     }
 
     // Delete all user's ciphers

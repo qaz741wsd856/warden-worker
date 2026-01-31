@@ -232,20 +232,21 @@ pub async fn list_ciphers(
 ) -> Result<RawJson, AppError> {
     let db = db::get_db(&env)?;
     let include_attachments = attachments::attachments_enabled(env.as_ref());
-    let ciphers_json = fetch_cipher_json_array_raw(
+    let force_row_query = super::ciphers_default_row_query(env.as_ref());
+    // Response schema: {"data":[...],"object":"list","continuationToken":null}
+    let mut response = String::new();
+    response.push_str("{\"data\":");
+    append_cipher_json_array_raw(
+        &mut response,
         &db,
         include_attachments,
         "WHERE c.user_id = ?1 AND c.deleted_at IS NULL",
         &[claims.sub.clone().into()],
         "ORDER BY c.updated_at DESC",
+        force_row_query,
     )
     .await?;
-
-    // Build response JSON via string concatenation (no parsing!)
-    let response = format!(
-        r#"{{"data":{},"object":"list","continuationToken":null}}"#,
-        ciphers_json
-    );
+    response.push_str(",\"object\":\"list\",\"continuationToken\":null}");
 
     Ok(RawJson(response))
 }
@@ -397,7 +398,6 @@ pub async fn hard_delete_cipher(
     let db = db::get_db(&env)?;
 
     if attachments::attachments_enabled(env.as_ref()) {
-        let bucket = attachments::require_bucket(env.as_ref())?;
         let id_json = serde_json::to_string(&[&id]).map_err(|_| AppError::Internal)?;
         let keys = attachments::list_attachment_keys_for_cipher_ids_json(
             &db,
@@ -406,7 +406,7 @@ pub async fn hard_delete_cipher(
             Some(&claims.sub),
         )
         .await?;
-        attachments::delete_r2_objects(&bucket, &keys).await?;
+        attachments::delete_storage_objects(env.as_ref(), &keys).await?;
     }
 
     query!(
@@ -436,7 +436,6 @@ pub async fn hard_delete_ciphers_bulk(
     let db = db::get_db(&env)?;
 
     if attachments::attachments_enabled(env.as_ref()) {
-        let bucket = attachments::require_bucket(env.as_ref())?;
         let keys = attachments::list_attachment_keys_for_cipher_ids_json(
             &db,
             &body,
@@ -444,7 +443,7 @@ pub async fn hard_delete_ciphers_bulk(
             Some(&claims.sub),
         )
         .await?;
-        attachments::delete_r2_objects(&bucket, &keys).await?;
+        attachments::delete_storage_objects(env.as_ref(), &keys).await?;
     }
 
     query!(
@@ -532,22 +531,25 @@ pub async fn restore_ciphers_bulk(
     .map_err(db::map_d1_json_error)?;
 
     let include_attachments = attachments::attachments_enabled(env.as_ref());
-    let ciphers_json = fetch_cipher_json_array_raw(
+    let force_row_query = super::ciphers_default_row_query(env.as_ref());
+
+    db::touch_user_updated_at(&db, &claims.sub).await?;
+
+    // Build response JSON via string concatenation (no parsing!)
+    // Response schema: {"data":[...],"object":"list","continuationToken":null}
+    let mut response = String::new();
+    response.push_str("{\"data\":");
+    append_cipher_json_array_raw(
+        &mut response,
         &db,
         include_attachments,
         "WHERE c.user_id = ?1 AND c.id IN (SELECT value FROM json_each(?2, '$.ids'))",
         &[claims.sub.clone().into(), body.clone().into()],
         "",
+        force_row_query,
     )
     .await?;
-
-    db::touch_user_updated_at(&db, &claims.sub).await?;
-
-    // Build response JSON via string concatenation (no parsing!)
-    let response = format!(
-        r#"{{"data":{},"object":"list","continuationToken":null}}"#,
-        ciphers_json
-    );
+    response.push_str(",\"object\":\"list\",\"continuationToken\":null}");
 
     Ok(RawJson(response))
 }
@@ -706,9 +708,8 @@ pub async fn purge_vault(
     }
 
     if attachments::attachments_enabled(env.as_ref()) {
-        let bucket = attachments::require_bucket(env.as_ref())?;
         let keys = attachments::list_attachment_keys_for_user(&db, user_id).await?;
-        attachments::delete_r2_objects(&bucket, &keys).await?;
+        attachments::delete_storage_objects(env.as_ref(), &keys).await?;
     }
 
     // Delete all user's ciphers (both active and soft-deleted)
@@ -820,25 +821,129 @@ fn cipher_json_array_sql(
     )
 }
 
-/// Execute a cipher JSON projection query and return the raw JSON array string.
+fn cipher_json_rows_sql(
+    attachments_enabled: bool,
+    where_clause: &str,
+    order_clause: &str,
+) -> String {
+    let cipher_expr = cipher_json_expr(attachments_enabled);
+    format!(
+        "SELECT {cipher_expr} AS cipher_json
+        FROM ciphers c
+        {where_clause}
+        {order_clause}",
+        cipher_expr = cipher_expr,
+        where_clause = where_clause,
+        order_clause = order_clause,
+    )
+}
+
+fn is_sqlite_toobig(err: &worker::Error) -> bool {
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("sqlite_toobig") || msg.contains("string or blob too big")
+}
+
+/// Append ciphers JSON array to an existing buffer.
 /// This avoids JSON parsing in Rust, significantly reducing CPU time.
-pub(crate) async fn fetch_cipher_json_array_raw(
+pub(crate) async fn append_cipher_json_array_raw(
+    out: &mut String,
     db: &worker::D1Database,
     attachments_enabled: bool,
     where_clause: &str,
     params: &[JsValue],
     order_clause: &str,
-) -> Result<String, AppError> {
+    force_row_query: bool,
+) -> Result<(), AppError> {
+    if force_row_query {
+        return append_from_rows(
+            out,
+            db,
+            attachments_enabled,
+            where_clause,
+            params,
+            order_clause,
+        )
+        .await;
+    }
+
     let sql = cipher_json_array_sql(attachments_enabled, where_clause, order_clause);
 
-    let row: Option<CipherJsonArrayRow> = db
+    let row: Result<Option<CipherJsonArrayRow>, worker::Error> =
+        db.prepare(&sql).bind(params)?.first(None).await;
+
+    match row {
+        Ok(row) => {
+            if let Some(r) = row {
+                out.reserve(r.ciphers_json.len());
+                out.push_str(&r.ciphers_json);
+            } else {
+                out.push_str("[]");
+            }
+            Ok(())
+        }
+        Err(err) if is_sqlite_toobig(&err) => {
+            append_from_rows(
+                out,
+                db,
+                attachments_enabled,
+                where_clause,
+                params,
+                order_clause,
+            )
+            .await
+        }
+        Err(err) => Err(db::map_d1_json_error(err)),
+    }
+}
+
+/// Append ciphers JSON array to an existing buffer row by row.
+/// This avoids JSON array exceeding the maximum size that can be returned in a single string.
+///
+/// Uses `raw_js_value()` to bypass Serde deserialization entirely, which should reduce
+/// CPU time for large payloads. Each row from `raw_js_value()` is a JS array `[cipher_json]`
+/// where the first element is the JSON string we need.
+pub(crate) async fn append_from_rows(
+    out: &mut String,
+    db: &worker::D1Database,
+    attachments_enabled: bool,
+    where_clause: &str,
+    params: &[JsValue],
+    order_clause: &str,
+) -> Result<(), AppError> {
+    use js_sys::Array;
+    use wasm_bindgen::JsCast;
+
+    let sql = cipher_json_rows_sql(attachments_enabled, where_clause, order_clause);
+
+    // Use raw_js_value() to get Vec<JsValue> without Serde deserialization.
+    // Each JsValue is a JS array: [cipher_json_string]
+    let raw_rows: Vec<JsValue> = db
         .prepare(&sql)
         .bind(params)?
-        .first(None)
+        .raw_js_value()
         .await
         .map_err(db::map_d1_json_error)?;
 
-    Ok(row
-        .map(|r| r.ciphers_json)
-        .unwrap_or_else(|| "[]".to_string()))
+    if raw_rows.is_empty() {
+        out.push_str("[]");
+        return Ok(());
+    }
+
+    out.push('[');
+    for (idx, row_js) in raw_rows.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        // Each row is a JS array [column0, column1, ...]. We only select one column (cipher_json).
+        let row_array = row_js
+            .dyn_ref::<Array>()
+            .ok_or_else(|| AppError::Internal)?;
+        let cipher_json_js = row_array.get(0);
+        let cipher_json = cipher_json_js
+            .as_string()
+            .ok_or_else(|| AppError::Internal)?;
+        out.push_str(&cipher_json);
+    }
+    out.push(']');
+    Ok(())
 }

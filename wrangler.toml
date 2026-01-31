@@ -52,6 +52,16 @@ run_worker_first = ["/api/*", "/identity/*"]
 # Set to 0 means no batching (all records imported in a single batch).
 # IMPORT_BATCH_SIZE = "30"
 
+# Cipher sync/list JSON query mode.
+# If enabled, fetch cipher JSON per-row and build the JSON array in the Worker
+# to avoid D1/SQLite `SQLITE_TOOBIG` errors on very large vaults.
+# Defaults to false (use `json_group_array` and fallback automatically on `SQLITE_TOOBIG`).
+# CIPHERS_DEFAULT_ROW_QUERY = "true"
+
+# Optional: preallocate the `/api/sync` response String capacity (bytes).
+# If unset/invalid, the Worker uses a default capacity and grows as needed.
+# SYNC_RESPONSE_PREALLOC_BYTES = "1048576"
+
 # Number of days to keep soft-deleted items before auto-purging.
 # Defaults to 30 days if not set. Set to 0 to disable auto-purge.
 # TRASH_AUTO_DELETE_DAYS = "30"
@@ -80,11 +90,19 @@ database_name = "vault1"
 database_id = "${D1_DATABASE_ID}"
 migrations_dir = "migrations"
 
-# R2 bucket for file attachments (optional)
-# Uncomment and configure this section to enable file attachments
+# R2 bucket for file attachments (optional, requires credit card)
+# R2 has priority: if R2 is configured, KV is ignored.
+# R2 supports larger files and streaming uploads.
+# Uncomment and configure this section to enable file attachments via R2:
 # [[r2_buckets]]
 # binding = "ATTACHMENTS_BUCKET"
 # bucket_name = "warden-attachments"
+
+# KV namespace for file attachments (optional, no credit card required)
+# KV has a 25MB limit per file, but doesn't require credit card binding.
+# If R2 is not configured, KV will be used for attachments.
+[[kv_namespaces]]
+binding = "ATTACHMENTS_KV"
 
 [env.dev]
 name = "warden-worker-dev"
@@ -115,11 +133,14 @@ database_name = "vault1-dev"
 database_id = "${D1_DATABASE_ID_DEV}"
 migrations_dir = "migrations"
 
-# R2 bucket for file attachments in dev environment (optional)
-# Uncomment and configure this section to enable file attachments
+# R2 bucket for file attachments in dev environment (optional, requires credit card)
 # [[env.dev.r2_buckets]]
 # binding = "ATTACHMENTS_BUCKET"
 # bucket_name = "warden-attachments-dev"
+
+# KV namespace for file attachments in dev environment (optional, no credit card required)
+[[env.dev.kv_namespaces]]
+binding = "ATTACHMENTS_KV"
 
 # logs
 [env.dev.observability]

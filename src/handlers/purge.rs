@@ -119,13 +119,11 @@ pub async fn purge_deleted_ciphers(env: &Env) -> Result<u32, worker::Error> {
 
     if count > 0 {
         if attachments::attachments_enabled(env) {
-            let bucket = attachments::require_bucket(env)
-                .map_err(|e| worker::Error::RustError(e.to_string()))?;
             let keys = attachments::list_attachment_keys_for_soft_deleted_before(&db, &cutoff_str)
                 .await
                 .map_err(|e| worker::Error::RustError(e.to_string()))?;
 
-            attachments::delete_r2_objects(&bucket, &keys)
+            attachments::delete_storage_objects(env, &keys)
                 .await
                 .map_err(|e| worker::Error::RustError(e.to_string()))?;
         }

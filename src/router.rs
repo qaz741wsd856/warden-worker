@@ -30,6 +30,7 @@ pub fn api_router(env: Env) -> Router {
         .route("/api/sync", get(sync::get_sync_data))
         // For on-demand sync checks
         .route("/api/accounts/revision-date", get(accounts::revision_date))
+        .route("/api/accounts/password-hint", post(accounts::password_hint))
         .route("/api/accounts/tasks", get(accounts::get_tasks))
         .route("/api/accounts/profile", get(accounts::get_profile))
         .route("/api/accounts/profile", post(accounts::post_profile))
