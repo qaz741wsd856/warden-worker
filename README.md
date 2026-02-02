@@ -262,6 +262,30 @@ sqlite3 .wrangler/state/v3/d1/miniflare-D1DatabaseObject/*.sqlite
 ## Contributing
 
 Issues and PRs are welcome. Please run `cargo fmt` and `cargo clippy --target wasm32-unknown-unknown --no-deps` before submitting.
+第五步：配置数据库同步S3
+我这里是整了一个自动导出D1并上传到S3的Action，虽然也能用私有仓库备份，但有点怕判定为滥用，所以还是创一个私有的S3吧。
+
+注意：
+
+千万别像我一样傻fufu的用跟Worker同一个Cloudflare账户的R2来备份，不然你号一被封就全没了；
+千万别用登录或者获取密钥需要依赖Bitwarden的账户，你得自己记着，不然就套娃了；它的恢复邮箱的密码你也得记着。
+如果没什么特殊需求，可以试试 backblaze，虽然额度非常少但用来备份也够了，胜在完全免费不绑卡。
+此处略过注册账户和创建桶的操作。
+
+请确保你之前添加的 CLOUDFLARE_API_TOKEN 至少有D1的读取权限。
+回到你fork的github仓库，继续添加以下secrets:
+
+Secret	Required	Description
+S3_ACCESS_KEY_ID	yes	S3 access key ID
+S3_SECRET_ACCESS_KEY	yes	S3 secret access key
+S3_BUCKET	yes	桶名称
+S3_REGION	yes	S3 区域，有就正常填，不知道就直接填auto
+S3_ENDPOINT	no	用AWS就不用填，其他填https://your-s3-domain.com的形式，带协议不带路径
+BACKUP_ENCRYPTION_KEY	no	额外加密密钥，不填就不加密，填了就一定要记住
+然后在Action页面中选到Backup D1 Database to S3，手动触发一次，等待它运行完成，然后检查你的S3中是否有备份文件。成功后，每天都会自动备份一次，每个备份默认保存30天。
+
+至于恢复操作还是请各位到时去看readme吧，希望这辈子不会用到。
+
 
 ## License
 
