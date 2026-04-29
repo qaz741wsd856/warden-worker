@@ -8,6 +8,7 @@ use crate::models::cipher::CipherRequestData;
 #[serde(rename_all = "camelCase")]
 pub struct ImportFolder {
     /// Optional folder ID - if provided and exists, the existing folder is used
+    #[serde(default, deserialize_with = "super::deser_opt_nonempty_str")]
     pub id: Option<String>,
     pub name: String,
 }

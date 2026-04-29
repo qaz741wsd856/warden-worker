@@ -59,7 +59,7 @@ This page covers the two deployment paths. Pick the one that fits your workflow 
 
    ```bash
    # Default pinned version (override by exporting BW_WEB_VERSION)
-   BW_WEB_VERSION="${BW_WEB_VERSION:-v2025.12.0}"
+   BW_WEB_VERSION="${BW_WEB_VERSION:-v2026.3.1}"
    if [ "${BW_WEB_VERSION}" = "latest" ]; then
      BW_WEB_VERSION="$(curl -s https://api.github.com/repos/dani-garcia/bw_web_builds/releases/latest | jq -r .tag_name)"
    fi
@@ -76,7 +76,7 @@ This page covers the two deployment paths. Pick the one that fits your workflow 
    **Optional:** Apply lightweight UI overrides to generate `public/web-vault/css/vaultwarden.css`:
 
    ```bash
-   bash scripts/apply-web-vault-overrides.sh public/web-vault
+   mkdir -p public/web-vault/css/ && cp public/css/vaultwarden.css public/web-vault/css/
    ```
 
 6. **Set up database and deploy the worker:**
@@ -101,6 +101,11 @@ This page covers the two deployment paths. Pick the one that fits your workflow 
 - `ALLOWED_EMAILS` your-email@example.com (supports glob patterns like `*@example.com`)
 - `JWT_SECRET` a long random string
 - `JWT_REFRESH_SECRET` a long random string
+
+   **Optional mobile push relay settings:**  
+     `PUSH_ENABLED=true`, `PUSH_RELAY_URI`, `PUSH_IDENTITY_URI` as text variables;  
+     `PUSH_INSTALLATION_ID`, `PUSH_INSTALLATION_KEY` as secret variables.  
+     See [Mobile Push Notifications](../README.md#mobile-push-notifications-optional) for more details.
 
 8. **Configure your Bitwarden client:**
 
@@ -151,8 +156,8 @@ You can pin/override the bundled Web Vault (bw_web_builds) version via GitHub Ac
 
 | Variable | Applies to | Default | Example | Notes |
 |----------|------------|---------|---------|-------|
-| `BW_WEB_VERSION` | prod (`main/uat/release*`) | `v2025.12.0` | `v2025.12.0` | Set to `latest` to follow upstream latest release |
-| `BW_WEB_VERSION_DEV` | dev (`dev`) | `v2025.12.0` | `v2025.12.0` | Set to `latest` to follow upstream latest release |
+| `BW_WEB_VERSION` | prod (`main/uat/release*`) | `v2026.3.1` | `v2026.3.1` | Set to `latest` to follow upstream latest release |
+| `BW_WEB_VERSION_DEV` | dev (`dev`) | `v2026.3.1` | `v2026.3.1` | Set to `latest` to follow upstream latest release |
 
 #### Global Equivalent Domains
 
@@ -195,6 +200,10 @@ If you skip seeding, `/api/settings/domains` and `/api/sync` will return `global
    - `ALLOWED_EMAILS` your-email@example.com (supports glob patterns like `*@example.com`, comma separated)
    - `JWT_SECRET` a long random string
    - `JWT_REFRESH_SECRET` a long random string
+   - Optional mobile push settings:
+     `PUSH_ENABLED=true`, `PUSH_RELAY_URI`, `PUSH_IDENTITY_URI`, `PUSH_INSTALLATION_ID`, `PUSH_INSTALLATION_KEY`.  
+     See [Mobile Push Notifications](../README.md#mobile-push-notifications-optional) for more details.
+
 
 > [!IMPORTANT]
 > The server can't work without these three environment variables. If you forget to set them, the server will crash.

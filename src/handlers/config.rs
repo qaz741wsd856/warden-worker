@@ -41,7 +41,7 @@ pub async fn config(
         // Version history:
         // - Individual cipher key encryption: 2024.2.0
         // - Mobile app support for MasterPasswordUnlockData: 2025.8.0
-        "version": "2025.12.0",
+        "version": "2026.3.1",
         "gitHash": "5d84f176",
         "server": {
           "name": "Vaultwarden",
@@ -54,7 +54,7 @@ pub async fn config(
           "vault": domain,
           "api": format!("{domain}/api"),
           "identity": format!("{domain}/identity"),
-          "notifications": format!(""),
+          "notifications": format!("{domain}/notifications"),
           "sso": format!(""),
           "cloudRegion": null,
         },
@@ -64,8 +64,10 @@ pub async fn config(
           "vapidPublicKey": null
         },
         "featureStates": {
-            // "duo-redirect": true,
-            // "flexible-collections-v-1": false
+            "pm-19051-send-email-verification": false,
+            "pm-19148-innovation-archive": true,
+            "cxp-import-mobile": true,
+            "cxp-export-mobile": true,
         },
         "object": "config",
     }))

@@ -1,8 +1,4 @@
-use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
-
-/// Remember token expiration in days
-const REMEMBER_TOKEN_EXPIRATION_DAYS: i64 = 30;
 
 /// Two-factor authentication types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,67 +130,4 @@ pub struct DisableAuthenticatorData {
     pub otp: Option<String>,
     #[serde(rename = "type")]
     pub r#type: i32,
-}
-
-// ============================================================================
-// Remember Token Storage (supports multiple devices with expiration)
-// ============================================================================
-
-/// Single device remember token
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RememberTokenEntry {
-    pub device_id: String,
-    pub token: String,
-    pub created_at: i64, // Unix timestamp
-}
-
-/// Container for multiple device remember tokens
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RememberTokenData {
-    pub tokens: Vec<RememberTokenEntry>,
-}
-
-impl RememberTokenData {
-    /// Parse from JSON string stored in database
-    pub fn from_json(data: &str) -> Self {
-        serde_json::from_str(data).unwrap_or_default()
-    }
-
-    /// Serialize to JSON string for database storage
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
-    }
-
-    /// Remove expired tokens (older than 30 days)
-    pub fn remove_expired(&mut self) {
-        let now = Utc::now().timestamp();
-        let expiration_seconds = Duration::days(REMEMBER_TOKEN_EXPIRATION_DAYS).num_seconds();
-        self.tokens
-            .retain(|t| now - t.created_at < expiration_seconds);
-    }
-
-    /// Validate a token for a specific device
-    /// Returns true if valid and not expired
-    pub fn validate(&self, device_id: &str, token: &str) -> bool {
-        let now = Utc::now().timestamp();
-        let expiration_seconds = Duration::days(REMEMBER_TOKEN_EXPIRATION_DAYS).num_seconds();
-
-        self.tokens.iter().any(|t| {
-            t.device_id == device_id && t.token == token && now - t.created_at < expiration_seconds
-        })
-    }
-
-    /// Add or update a token for a device
-    /// If the device already has a token, it will be replaced
-    pub fn upsert(&mut self, device_id: String, token: String) {
-        // Remove existing token for this device
-        self.tokens.retain(|t| t.device_id != device_id);
-
-        // Add new token
-        self.tokens.push(RememberTokenEntry {
-            device_id,
-            token,
-            created_at: Utc::now().timestamp(),
-        });
-    }
 }

@@ -16,6 +16,9 @@ Warden aims to solve this problem by leveraging the Cloudflare Workers ecosystem
 
 * **Core Vault Functionality:** Create, read, update, and delete ciphers and folders.
 * **File Attachments:** Optional Cloudflare KV or R2 storage for attachments.
+* **Bitwarden Send:** Share encrypted text or files via a link.
+* **Device Management:** View and revoke active sessions.
+* **Live Sync & Push Notifications:** Real-time vault updates via WebSocket and mobile push.
 * **TOTP Support:** Store and generate Time-based One-Time Passwords.
 * **Website Icons:** Vaultwarden-compatible icon redirect route.
 * **Bitwarden Compatible:** Works with official Bitwarden clients.
@@ -38,14 +41,21 @@ Warden supports file attachments using either **Cloudflare KV** or **Cloudflare 
 
 See the [deployment guide](docs/deployment.md) for setup details. R2 may incur additional costs; see [Cloudflare R2 pricing](https://developers.cloudflare.com/r2/pricing/).
 
+### Bitwarden Send
+
+- **Text Send:** Enabled by default, no extra configuration required.
+- **File Send:** Requires a storage backend (KV or R2), same as [attachments](#attachments-support).
+
+> [!NOTE]
+> Due to the D1 single-row size limit of 2 MB, the maximum text Send size is approximately **1.8 MiB**. Additionally, the `/api/sync` endpoint serializes all of the current user's Sends into the response. A large number of Sends or very large text Sends will significantly increase CPU time and response size.
+
+
 ## Current Status
 
 **This project is not yet feature-complete**, ~~and it may never be~~. It currently supports the core functionality of a personal vault, including TOTP. However, it does **not** support the following features:
 
 * Sharing
 * 2FA login (except TOTP)
-* Bitwarden Send
-* Device and session management
 * Emergency access
 * Admin operations
 * Organizations
@@ -55,9 +65,9 @@ There are no immediate plans to implement these features. The primary goal of th
 
 ## Compatibility
 
-* **Browser Extensions:** Chrome, Firefox, Safari, etc. (Tested 2025.11.1 on Chrome)
-* **Android App:** The official Bitwarden Android app. (Tested 2025.11.0)
-* **iOS App:** The official Bitwarden iOS app. (Tested 2025.11.0)
+* **Browser Extensions:** Chrome, Firefox, Safari, etc. (Tested 2026.3.0 on Chrome)
+* **Android App:** The official Bitwarden Android app. (Tested 2026.4.0)
+* **iOS App:** The official Bitwarden iOS app. (Tested 2026.4.0)
 
 ## Demo
 
@@ -77,7 +87,7 @@ It's highly recommended to deploy your own instance since the demo can hit the r
 
 ## Frontend (Web Vault)
 
-The frontend is bundled with the Worker using [Cloudflare Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/). The GitHub Actions workflows download a **pinned** [bw_web_builds](https://github.com/dani-garcia/bw_web_builds) (Vaultwarden web vault) release (default: `v2025.12.0`) and deploy it together with the backend. You can override it via GitHub Actions Variables (`BW_WEB_VERSION` for prod, `BW_WEB_VERSION_DEV` for dev), or set it to `latest` to follow upstream.
+The frontend is bundled with the Worker using [Cloudflare Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/). The GitHub Actions workflows download a **pinned** [bw_web_builds](https://github.com/dani-garcia/bw_web_builds) (Vaultwarden web vault) release (default: `v2026.3.1`) and deploy it together with the backend. You can override it via GitHub Actions Variables (`BW_WEB_VERSION` for prod, `BW_WEB_VERSION_DEV` for dev), or set it to `latest` to follow upstream.
 
 **How it works:**
 - Static files (HTML, CSS, JS) are served directly by Cloudflare's edge network.
@@ -88,7 +98,7 @@ The frontend is bundled with the Worker using [Cloudflare Workers Static Assets]
 **UI overrides (optional):**
 - This project ships a small set of "lightweight self-host" UI tweaks in `public/css/`.
 - In CI/CD (and optionally locally), we apply them after extracting `bw_web_builds`:
-  - `bash scripts/apply-web-vault-overrides.sh public/web-vault`
+  - `mkdir -p public/web-vault/css/ && cp public/css/vaultwarden.css public/web-vault/css/`
 
 > [!NOTE]
 > Migrating from separate frontend deployment? If you previously deployed the frontend separately to Cloudflare Pages, you can delete the `warden-frontend` Pages project and re-setup the router for the worker. The frontend is now bundled with the Worker and no longer requires a separate deployment.
@@ -156,7 +166,7 @@ If the binding is missing, requests proceed without rate limiting (graceful degr
 
 ## Configuration
 
-### Durable Objects (CPU Offloading)
+### CPU offloading (via Durable Objects)
 
 Cloudflare Workers Free plan has a very small per-request CPU budget. Two kinds of endpoints are particularly CPU-heavy:
 
@@ -178,10 +188,37 @@ Whether CPU-heavy endpoints are offloaded is determined by whether the `HEAVY_DO
 >
 > If you choose to disable Durable Objects, you may need subscribe to a paid plan to avoid being throttled by Cloudflare.
 
-### Environment Variables
+### Live Sync and Push Notifications
+
+Warden supports live sync for vault data via two mechanisms: WebSocket push (for desktop apps and browser extensions) and Mobile push notifications (for official mobile apps).
+
+**WebSocket Push (Desktop & Extensions)**
+
+This feature is powered by Durable Objects and enabled by default when the `NOTIFY_DO` Durable Object binding is configured in `wrangler.toml`. Removing this binding (and migration) will gracefully disable WebSocket notifications.
+
+**Mobile Push Notifications**
+
+Warden supports push notifications to official Bitwarden mobile apps via the Bitwarden push relay service.
+
+**Setup:**
+
+1. Obtain an installation ID and key from [https://bitwarden.com/host/](https://bitwarden.com/host/).
+2. Store the credentials as secrets (`PUSH_INSTALLATION_ID` & `PUSH_INSTALLATION_KEY`) via the Cloudflare dashboard or `wrangler` cli.
+3. Enable push by setting `PUSH_ENABLED` to `true` in `wrangler.toml` `[vars]` or via the Cloudflare dashboard.
+
+Optionally, you can override the default relay endpoints by setting `PUSH_RELAY_URI` and `PUSH_IDENTITY_URI` (defaults to `https://push.bitwarden.com` and `https://identity.bitwarden.com`).
+
+For detailed configuration and troubleshooting, see the [Vaultwarden wiki on push notifications](https://github.com/dani-garcia/vaultwarden/wiki/Enabling-Mobile-Client-push-notification).
+
+### Other Environment Variables
 
 Configure environment variables in `wrangler.toml` under `[vars]`, or set them via Cloudflare Dashboard:
 
+* **`BASE_URL`** (Optional):
+  - Overrides the extracted base URL for up/down URLs for files.
+  - Format: Include HTTPS protocol, domain, and port (if using non-443 reverse proxy). Do not include any trailing path.
+  - Example: `https://vault.example.com` or `https://vault.example.com:8443`
+  - If not set, falls back to extracting from the incoming request.
 * **`PASSWORD_ITERATIONS`** (Optional, Default: `600000`):
   - PBKDF2 iterations for server-side password hashing.
   - Minimum is 600000.
@@ -203,6 +240,15 @@ Configure environment variables in `wrangler.toml` under `[vars]`, or set them v
   - Example: `1048576` for 1GB.
 * **`ATTACHMENT_TTL_SECS`** (Optional, Default: `300`, Minimum: `60`): 
   - TTL for attachment upload/download URLs.
+* **`SEND_TEXT_MAX_BYTES`** (Optional, Default: `1887436` ≈ 1.8 MiB):
+  - Max size for text Send content. Constrained by D1's 2 MB single-row limit.
+* **`SEND_MAX_BYTES`** (Optional, Default: `104857600` = 100 MiB):
+  - Max file size for file Sends. Subject to the same KV/R2 limits as attachments.
+* **`USER_SEND_LIMIT_KB`** (Optional):
+  - Max total Send file storage per user in KB.
+* **`SEND_TTL_SECS`** (Optional, Default: `300`):
+  - TTL for Send file upload/download URLs.
+
 ### Scheduled Tasks (Cron)
 
 The worker runs a scheduled task to clean up soft-deleted items. By default, it runs daily at 03:00 UTC (`wrangler.toml` `[triggers]` cron `"0 3 * * *"`). Adjust as needed; see [Cloudflare Cron Triggers documentation](https://developers.cloudflare.com/workers/configuration/cron-triggers/) for cron expression syntax.
@@ -259,6 +305,17 @@ sqlite3 .wrangler/state/v3/d1/miniflare-D1DatabaseObject/*.sqlite
 
 > [!NOTE]
 > Local dev requires Node.js and Wrangler. The Worker runs in a simulated environment via [workerd](https://github.com/cloudflare/workerd).
+
+## Updating Your Fork
+
+If you deployed via a GitHub fork, keeping up to date is straightforward:
+
+1. **Watch for new releases** — On [this repository](https://github.com/qaz741wsd856/warden-worker), click **Watch** → **Custom** → check **Releases**. You'll be notified when a new version is published.
+2. **Sync your fork** — Go to your fork on GitHub, click **Sync fork** → **Update branch**. This pulls the latest changes from upstream into your fork's default branch.
+3. **Automatic deployment** — If you set up CI/CD via GitHub Actions, the push-to-main workflow will automatically build and deploy the new version to your Cloudflare Worker. No manual steps needed.
+
+> [!TIP]
+> It is recommended to sync your fork when a new release is published in the upstream, so you always have the latest features and security fixes.
 
 ## Contributing
 

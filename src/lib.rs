@@ -12,6 +12,8 @@ mod durable;
 mod error;
 mod handlers;
 mod models;
+mod notifications;
+mod push;
 mod router;
 
 /// Base URL extracted from the incoming request, used for config endpoint.
@@ -19,33 +21,42 @@ mod router;
 pub struct BaseUrl(pub String);
 
 #[event(fetch)]
-pub async fn main(
-    req: HttpRequest,
-    env: Env,
-    _ctx: Context,
-) -> Result<axum::http::Response<axum::body::Body>> {
-    // Set up logging
+pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<web_sys::Response> {
     console_error_panic_hook::set_once();
     let _ = console_log::init_with_level(log::Level::Debug);
 
-    // Extract base URL from the incoming request
-    let uri = req.uri().clone();
-    let base_url = format!(
-        "{}://{}",
-        uri.scheme_str().unwrap_or("https"),
-        uri.authority().map(|a| a.as_str()).unwrap_or("localhost")
-    );
+    let url = req.url()?;
+    let method = req.method();
+    let path = url.path().to_string();
+
+    if handlers::streaming::is_streaming_route(&method, &path) {
+        return Ok(handlers::streaming::handle(req, &env, &method, &path, &url)
+            .await
+            .into());
+    }
+
+    let http_req: HttpRequest = req.try_into()?;
+
+    let base_url = env
+        .var("BASE_URL")
+        .ok()
+        .map(|v| v.to_string().trim_end_matches('/').to_string())
+        .unwrap_or_else(|| {
+            let uri = http_req.uri().clone();
+            format!(
+                "{}://{}",
+                uri.scheme_str().unwrap_or("https"),
+                uri.authority().map(|a| a.as_str()).unwrap_or("localhost")
+            )
+        });
 
     let env = Arc::new(env);
 
-    // Allow all origins for CORS, which is typical for a public API like Bitwarden's.
     let cors = CorsLayer::new()
         .allow_methods(Any)
         .allow_headers(Any)
         .allow_origin(Any);
 
-    // Attachment uploads/downloads are handled in entry.js for zero-copy streaming,
-    // so we can use a conservative body limit here (5MB) for regular API requests.
     const BODY_LIMIT: usize = 5 * 1024 * 1024;
 
     let mut app = router::api_router((*env).clone())
@@ -53,7 +64,8 @@ pub async fn main(
         .layer(cors)
         .layer(DefaultBodyLimit::max(BODY_LIMIT));
 
-    Ok(app.call(req).await?)
+    let resp = app.call(http_req).await?;
+    worker::response_to_wasm(resp)
 }
 
 /// Scheduled event handler for cron-triggered tasks.
@@ -88,6 +100,26 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
         }
         Err(e) => {
             log::error!("Scheduled purge failed: {:?}", e);
+        }
+    }
+
+    log::info!("Scheduled task triggered: purging stale pending sends");
+    match handlers::purge::purge_stale_pending_sends(&env).await {
+        Ok(count) => {
+            log::info!("Pending send purge completed: {} record(s) removed", count);
+        }
+        Err(e) => {
+            log::error!("Pending send purge failed: {:?}", e);
+        }
+    }
+
+    log::info!("Scheduled task triggered: purging expired sends");
+    match handlers::purge::purge_expired_sends(&env).await {
+        Ok(count) => {
+            log::info!("Expired send purge completed: {} record(s) removed", count);
+        }
+        Err(e) => {
+            log::error!("Expired send purge failed: {:?}", e);
         }
     }
 }

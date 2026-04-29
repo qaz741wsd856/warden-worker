@@ -13,5 +13,7 @@ bw_web_builds/
 sql/global_domains_seed.sql
 
 # Coding assistant
+.ace-tool/
 .codex/
+.cursor/
 .claude/

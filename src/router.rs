@@ -7,7 +7,7 @@ use worker::Env;
 
 use crate::handlers::{
     accounts, attachments, ciphers, config, devices, domains, emergency_access, folders, identity,
-    import, meta, sync, twofactor, webauth,
+    import, meta, sends, sync, twofactor, webauth,
 };
 
 pub fn api_router(env: Env) -> Router {
@@ -43,6 +43,8 @@ pub fn api_router(env: Env) -> Router {
         .route("/api/accounts/kdf", post(accounts::post_kdf))
         // Change password
         .route("/api/accounts/password", post(accounts::post_password))
+        // Log out all sessions via security stamp rotation
+        .route("/api/accounts/security-stamp", post(accounts::post_sstamp))
         // Rotate encryption keys
         .route(
             "/api/accounts/key-management/rotate-user-account-keys",
@@ -69,7 +71,7 @@ pub fn api_router(env: Env) -> Router {
             "/api/ciphers/{id}/attachment/v2",
             post(attachments::create_attachment_v2),
         )
-        // Note: Azure upload and download routes are handled in entry.js for zero-copy streaming
+        // Note: Azure upload/download routes are intercepted in handlers::streaming (zero-copy)
         // PUT /api/ciphers/{id}/attachment/{attachment_id}/azure-upload
         // GET /api/ciphers/{id}/attachment/{attachment_id}/download?token=...
         .route(
@@ -126,6 +128,18 @@ pub fn api_router(env: Env) -> Router {
         .route("/api/ciphers/{id}/restore", put(ciphers::restore_cipher))
         // Cipher bulk restore
         .route("/api/ciphers/restore", put(ciphers::restore_ciphers_bulk))
+        // Cipher archive (sets archived_at)
+        .route("/api/ciphers/{id}/archive", put(ciphers::archive_cipher))
+        .route(
+            "/api/ciphers/{id}/unarchive",
+            put(ciphers::unarchive_cipher),
+        )
+        // Cipher bulk archive
+        .route("/api/ciphers/archive", put(ciphers::archive_ciphers_bulk))
+        .route(
+            "/api/ciphers/unarchive",
+            put(ciphers::unarchive_ciphers_bulk),
+        )
         // Move ciphers to folder
         .route("/api/ciphers/move", post(ciphers::move_cipher_selected))
         .route("/api/ciphers/move", put(ciphers::move_cipher_selected))
@@ -138,6 +152,28 @@ pub fn api_router(env: Env) -> Router {
         .route("/api/folders/{id}", put(folders::update_folder))
         .route("/api/folders/{id}", delete(folders::delete_folder))
         .route("/api/folders/{id}/delete", post(folders::delete_folder))
+        // Sends
+        .route("/api/sends", get(sends::list_sends))
+        .route("/api/sends", post(sends::create_text_send))
+        .route("/api/sends/file/v2", post(sends::create_file_send_v2))
+        .route("/api/sends/file", post(sends::create_file_send_legacy))
+        .route(
+            "/api/sends/{send_id}/file/{file_id}",
+            post(sends::upload_file_send_direct),
+        )
+        .route("/api/sends/{send_id}", get(sends::get_send))
+        .route("/api/sends/{send_id}", put(sends::update_send))
+        .route("/api/sends/{send_id}", delete(sends::delete_send))
+        .route(
+            "/api/sends/{send_id}/remove-password",
+            put(sends::remove_password),
+        )
+        // Send anonymous access (no auth required)
+        .route("/api/sends/access/{access_id}", post(sends::access_send))
+        .route(
+            "/api/sends/{send_id}/access/file/{file_id}",
+            post(sends::access_file_send),
+        )
         .route("/api/config", get(config::config))
         // Meta endpoints (mirrors a subset of vaultwarden core/mod.rs)
         .route("/api/alive", get(meta::alive))

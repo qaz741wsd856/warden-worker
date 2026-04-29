@@ -10,9 +10,10 @@ Unsupported/"won't implement" features are listed in `README.md`.
 ## Project Structure & Module Organization
 - `src/`: Rust backend (Axum router + request handlers).
   - `src/handlers/`: endpoint implementations grouped by feature.
-  - `src/models/`: request/response payload types.
-  - `src/durable/`: Durable Object(s) (e.g., `HeavyDo`) to offload CPU-heavy endpoints.
-    - `HeavyDo` directly reuses the existing Axum router/handlers stack (no duplicated business logic).
+  - `src/models/`: request/response payload types and database models.
+  - `src/durable/`: Durable Objects.
+    - `HeavyDo` directly reuses the existing Axum router/handlers stack (no duplicated business logic) to offload CPU-heavy endpoints.
+    - `NotifyDo` for websocket notifications.
 - `src/entry.js`: Wrangler entrypoint (routing + R2 attachment streaming + optional DO offload).
 - `migrations/`: D1 migrations applied via Wrangler.
 - `sql/`: base schema (`sql/schema.sql`) and optional seed SQL.

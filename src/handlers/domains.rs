@@ -1,5 +1,4 @@
 use axum::{extract::State, Json};
-use chrono::Utc;
 use log::warn;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -7,7 +6,12 @@ use std::sync::Arc;
 use worker::{query, Env};
 
 use crate::handlers::ciphers::RawJson;
-use crate::{auth::Claims, db, error::AppError};
+use crate::{
+    auth::Claims,
+    db,
+    error::AppError,
+    notifications::{self, UpdateType},
+};
 
 /// Build `globalEquivalentDomains` JSON (as a raw JSON string) in SQLite/D1.
 ///
@@ -170,7 +174,7 @@ pub async fn post_domains(
     let equivalent_domains_json = serde_json::to_string(&equivalent_domains)
         .map_err(|_| AppError::BadRequest("Invalid equivalent domains".to_string()))?;
 
-    let now = Utc::now().to_rfc3339();
+    let now = db::now_string();
     query!(
         &db,
         "UPDATE users SET equivalent_domains = ?1, excluded_globals = ?2, updated_at = ?3 WHERE id = ?4",
@@ -183,6 +187,15 @@ pub async fn post_domains(
     .run()
     .await
     .map_err(|_| AppError::Database)?;
+
+    notifications::publish_user_update(
+        env.as_ref(),
+        &claims.sub,
+        UpdateType::SyncSettings,
+        &now,
+        Some(&claims.device),
+    )
+    .await;
 
     Ok(Json(json!({})))
 }

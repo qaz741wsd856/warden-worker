@@ -1,9 +1,8 @@
 use crate::error::AppError;
 use chrono::Utc;
-use std::sync::Arc;
 use worker::{query, D1Database, D1PreparedStatement, Env, Error};
 
-pub fn get_db(env: &Arc<Env>) -> Result<D1Database, AppError> {
+pub fn get_db(env: &Env) -> Result<D1Database, AppError> {
     env.d1("vault1").map_err(AppError::Worker)
 }
 
@@ -17,10 +16,18 @@ pub fn map_d1_json_error(err: Error) -> AppError {
     }
 }
 
-/// Update the user's `updated_at` field to the current timestamp.
+pub fn now_string() -> String {
+    Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
+/// This is a helper function to update the user's `updated_at` field.
+/// `now` is the current timestamp in the format "YYYY-MM-DDTHH:MM:SS.SSSZ".
 /// This should be called after any operation that modifies user data (ciphers, folders, etc.)
-pub async fn touch_user_updated_at(db: &D1Database, user_id: &str) -> Result<(), AppError> {
-    let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+pub async fn touch_user_updated_at(
+    db: &D1Database,
+    user_id: &str,
+    now: &str,
+) -> Result<(), AppError> {
     query!(
         db,
         "UPDATE users SET updated_at = ?1 WHERE id = ?2",

@@ -12,15 +12,20 @@ bindings = [
   # while keeping the main Worker fast for the rest.
   #
   # - HEAVY_DO: Rust DO, reuses existing axum router for CPU-heavy endpoints (import/login/password verify).
-  { name = "HEAVY_DO", class_name = "HeavyDo" }
+  { name = "HEAVY_DO", class_name = "HeavyDo" },
+  { name = "NOTIFY_DO", class_name = "NotifyDo" }
 ]
 
 [[migrations]]
 tag = "do_v1"
 new_sqlite_classes = ["HeavyDo"]
 
+[[migrations]]
+tag = "do_v2"
+new_sqlite_classes = ["NotifyDo"]
+
 [build]
-command = "cargo install --locked -q worker-build --version 0.7.4 && worker-build --release --locked"
+command = "cargo install --locked -q worker-build --version 0.8.1 && worker-build --release --locked"
 
 # Rate limiting configuration for protecting sensitive endpoints
 # See: https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
@@ -41,8 +46,14 @@ not_found_handling = "404-page"
 html_handling = "auto-trailing-slash"
 # Only invoke Worker for API, Identity, and icon compatibility routes.
 run_worker_first = ["/api/*", "/identity/*", "/icons/*"]
+# Only invoke Worker for API and Identity routes, serve static files directly for other routes
+run_worker_first = ["/api/*", "/identity/*", "/notifications/*"]
 
 [vars]
+# Base URL for the worker, used for generating up/down URLs for files.
+# If not set, the base URL will be extracted from the incoming request.
+# BASE_URL = "https://vault.example.com"
+
 # Server-side password hashing PBKDF2 iterations (stored per-user).
 # Defaults to 600000, and will be clamped to a minimum of 600000 even if set lower.
 # Existing users whose password iterations are less than this value will be upgraded on login.
@@ -61,6 +72,11 @@ run_worker_first = ["/api/*", "/identity/*", "/icons/*"]
 # Optional: preallocate the `/api/sync` response String capacity (bytes).
 # If unset/invalid, the Worker uses a default capacity and grows as needed.
 # SYNC_RESPONSE_PREALLOC_BYTES = "1048576"
+
+# Push Notification Configuration (optional)
+# PUSH_ENABLED = "false"
+# PUSH_RELAY_URI = "https://push.bitwarden.com"
+# PUSH_IDENTITY_URI = "https://identity.bitwarden.com"
 
 # Number of days to keep soft-deleted items before auto-purging.
 # Defaults to 30 days if not set. Set to 0 to disable auto-purge.
@@ -106,7 +122,6 @@ binding = "ATTACHMENTS_KV"
 
 [env.dev]
 name = "warden-worker-dev"
-keep_vars = true
 workers_dev = false
 preview_urls = false
 
@@ -114,7 +129,8 @@ preview_urls = false
 
 [env.dev.durable_objects]
 bindings = [
-  { name = "HEAVY_DO", class_name = "HeavyDo" }
+  { name = "HEAVY_DO", class_name = "HeavyDo" },
+  { name = "NOTIFY_DO", class_name = "NotifyDo" }
 ]
 
 # Dev environment also needs cron triggers

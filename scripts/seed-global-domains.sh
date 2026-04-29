@@ -20,7 +20,7 @@ Examples:
     --url https://raw.githubusercontent.com/dani-garcia/vaultwarden/<tag-or-commit>/src/static/global_domains.json
 
   # Use a pinned Wrangler version via npx (recommended for CI)
-  ./scripts/seed-global-domains.sh --db vault1 --remote --wrangler-version 4.54.0
+  ./scripts/seed-global-domains.sh --db vault1 --remote --wrangler-version 4.82.1
 EOF
 }
 

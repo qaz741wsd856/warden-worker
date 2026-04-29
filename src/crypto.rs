@@ -60,6 +60,75 @@ pub fn pbkdf2_sha256(
     Ok(out)
 }
 
+/// Derives a key using PBKDF2-HMAC-SHA256 via Web Crypto API (hardware-accelerated, zero CPU cost).
+///
+/// Workers WebCrypto limits PBKDF2 to <= 100,000 iterations.
+/// Use for Send passwords and other low-iteration use cases.
+pub async fn webcrypto_pbkdf2_sha256(
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+    key_length_bits: u32,
+) -> Result<Vec<u8>, AppError> {
+    let subtle = subtle_crypto()?;
+
+    let algorithm = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &algorithm,
+        &JsValue::from_str("name"),
+        &JsValue::from_str("PBKDF2"),
+    )
+    .map_err(|e| AppError::Crypto(format!("Failed to set algorithm: {e:?}")))?;
+
+    let password_array = Uint8Array::new_from_slice(password);
+    let key_usages = js_sys::Array::of1(&JsValue::from_str("deriveBits"));
+
+    let base_key = JsFuture::from(
+        subtle
+            .import_key_with_object("raw", &password_array, &algorithm, false, &key_usages)
+            .map_err(|e| AppError::Crypto(format!("PBKDF2 import_key failed: {e:?}")))?,
+    )
+    .await
+    .map_err(|e| AppError::Crypto(format!("PBKDF2 import_key await failed: {e:?}")))?;
+
+    let derive_params = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &derive_params,
+        &JsValue::from_str("name"),
+        &JsValue::from_str("PBKDF2"),
+    )
+    .map_err(|e| AppError::Crypto(format!("Failed to set derive params: {e:?}")))?;
+    let salt_array = Uint8Array::new_from_slice(salt);
+    js_sys::Reflect::set(&derive_params, &JsValue::from_str("salt"), &salt_array)
+        .map_err(|e| AppError::Crypto(format!("Failed to set salt: {e:?}")))?;
+    js_sys::Reflect::set(
+        &derive_params,
+        &JsValue::from_str("iterations"),
+        &JsValue::from_f64(iterations as f64),
+    )
+    .map_err(|e| AppError::Crypto(format!("Failed to set iterations: {e:?}")))?;
+
+    let hash_obj = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &hash_obj,
+        &JsValue::from_str("name"),
+        &JsValue::from_str("SHA-256"),
+    )
+    .map_err(|e| AppError::Crypto(format!("Failed to set hash: {e:?}")))?;
+    js_sys::Reflect::set(&derive_params, &JsValue::from_str("hash"), &hash_obj)
+        .map_err(|e| AppError::Crypto(format!("Failed to set hash obj: {e:?}")))?;
+
+    let derived = JsFuture::from(
+        subtle
+            .derive_bits_with_object(&derive_params, &CryptoKey::from(base_key), key_length_bits)
+            .map_err(|e| AppError::Crypto(format!("PBKDF2 deriveBits failed: {e:?}")))?,
+    )
+    .await
+    .map_err(|e| AppError::Crypto(format!("PBKDF2 deriveBits await failed: {e:?}")))?;
+
+    Ok(Uint8Array::new(&derived).to_vec())
+}
+
 /// Generates a cryptographically secure random salt.
 pub fn generate_salt() -> Result<String, AppError> {
     let crypto = get_crypto()?;

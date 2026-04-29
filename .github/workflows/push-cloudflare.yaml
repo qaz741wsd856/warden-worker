@@ -1,4 +1,6 @@
 name: Build
+permissions:
+    contents: read
 
 on:
   push:
@@ -11,24 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Pin tool versions to avoid upstream updates breaking CI
-      WORKER_BUILD_VERSION: "0.7.4"
-      WRANGLER_VERSION: "4.54.0"
+      WORKER_BUILD_VERSION: "0.8.1"
+      WRANGLER_VERSION: "4.82.1"
       # Web Vault frontend (bw_web_builds) version tag (default pinned; override via GitHub Actions Variables)
-      # - Set repository variable BW_WEB_VERSION (e.g. v2025.12.0) to override
+      # - Set repository variable BW_WEB_VERSION (e.g. v2026.3.1) to override
       # - Set to "latest" to follow the latest bw_web_builds release
-      BW_WEB_VERSION: ${{ vars.BW_WEB_VERSION || 'v2025.12.0' }}
+      BW_WEB_VERSION: ${{ vars.BW_WEB_VERSION || 'v2026.3.1' }}
 
       # Required for wrangler
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Node.js (for npx wrangler)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: |
@@ -42,7 +44,7 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
           rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
       # - name: Cache Cargo registry and build artifacts
-      #   uses: actions/cache@v3
+      #   uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
       #   with:
       #       path: |
       #           target
@@ -97,7 +99,7 @@ jobs:
 
       - name: Apply web vault overrides (vaultwarden.css)
         run: |
-          bash scripts/apply-web-vault-overrides.sh public/web-vault
+          mkdir -p public/web-vault/css/ && cp public/css/vaultwarden.css public/web-vault/css/
 
       - name: Replace D1_DATABASE_ID in wrangler.toml
         run: sed -i "s/\${D1_DATABASE_ID}/${{ secrets.D1_DATABASE_ID }}/g" wrangler.toml
@@ -174,7 +176,7 @@ jobs:
           WRANGLER="npx --yes wrangler@${WRANGLER_VERSION}"
 
           # Apply migrations with retry loop to handle legacy ensure_schema columns
-          MAX_RETRIES=10
+          MAX_RETRIES=15
           RETRY_COUNT=0
 
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
@@ -238,7 +240,7 @@ jobs:
             bash scripts/seed-global-domains.sh --db vault1 --remote --wrangler-version "${WRANGLER_VERSION}"
           fi
 
-      - uses: cloudflare/wrangler-action@v3
+      - uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65 # v3
         id: cf
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

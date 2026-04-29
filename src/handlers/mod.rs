@@ -10,6 +10,8 @@ pub mod identity;
 pub mod import;
 pub mod meta;
 pub mod purge;
+pub mod sends;
+pub mod streaming;
 pub mod sync;
 pub mod twofactor;
 pub mod webauth;

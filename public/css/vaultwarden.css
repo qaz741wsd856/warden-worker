@@ -7,8 +7,7 @@
 
   Usage:
   - After CI/CD or local download of bw_web_builds and extraction, keep `public/web-vault/` as the static resource root directory.
-  - Run: `bash scripts/apply-web-vault-overrides.sh public/web-vault`
-    which will copy this file (public/css/vaultwarden.css) to `public/web-vault/css/vaultwarden.css`.
+  - Run: `mkdir -p public/web-vault/css/ && cp public/css/vaultwarden.css public/web-vault/css/`
 */
 
 /* Hide unsupported UI elements */
@@ -54,9 +53,8 @@ app-user-layout app-danger-zone button:nth-child(1),
 /* WebAuthn */
 .providers-2fa-7,
 
-/* Emergency access & Sends (not supported) */
+/* Emergency access (not supported) */
 bit-nav-item[route="settings/emergency-access"],
-bit-nav-item[route="sends"],
 
 /* Passkey settings (not supported) */
 app-user-layout app-password-settings app-webauthn-login-settings {

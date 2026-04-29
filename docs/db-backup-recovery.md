@@ -46,6 +46,9 @@ Add the following secrets to your GitHub repository (`Settings > Secrets and var
 | `BACKUP_ENCRYPTION_KEY` | no | Optional encryption passphrase. If set, backups will be encrypted with AES-256. **Strongly recommended** since the database contains unencrypted user metadata (emails, item counts) |
 | `BACKUP_RETENTION_DAYS` | no | Number of days to keep backups. Defaults to 30 |
 
+> [!WARNING]
+> **GitHub automatically disables scheduled workflows after 60 days of repository inactivity.** If your fork receives no commits to the default branch for 60 days, GitHub will disable the backup workflow (and all other cron-triggered workflows). You will receive an email notification before this happens. To prevent this, periodically [sync your fork](../README.md#updating-your-fork) with upstream (if it creates commits), or manually re-enable the workflow from the Actions tab. See [GitHub docs: Disabling and enabling a workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows) for details.
+
 ### Backup Features
 
 * **Automatic Daily Backups:** Production database is backed up daily at 04:00 UTC

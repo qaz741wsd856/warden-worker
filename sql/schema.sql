@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS ciphers (
     favorite BOOLEAN NOT NULL DEFAULT 0,
     folder_id TEXT,
     deleted_at TEXT,
+    archived_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -85,6 +86,26 @@ CREATE TABLE IF NOT EXISTS twofactor (
     UNIQUE(user_uuid, atype)
 );
 
+-- Devices table for device-bound auth, refresh tokens, and push registration.
+CREATE TABLE IF NOT EXISTS devices (
+    identifier TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    type INTEGER NOT NULL,
+    push_uuid TEXT,
+    push_token TEXT,
+    refresh_token TEXT NOT NULL,
+    twofactor_remember TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (identifier, user_id),
+    UNIQUE(refresh_token)
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_devices_push_token ON devices(push_token);
+
 -- Folders table for organizing ciphers
 CREATE TABLE IF NOT EXISTS folders (
     id TEXT PRIMARY KEY NOT NULL,
@@ -105,3 +126,50 @@ CREATE TABLE IF NOT EXISTS global_equivalent_domains (
 );
 CREATE INDEX IF NOT EXISTS idx_global_equivalent_domains_sort_order
     ON global_equivalent_domains(sort_order);
+
+-- Send support: main sends table
+CREATE TABLE IF NOT EXISTS sends (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  notes TEXT,
+  type INTEGER NOT NULL,
+  data TEXT NOT NULL,
+  akey TEXT NOT NULL,
+  password_hash TEXT,
+  password_salt TEXT,
+  password_iter INTEGER,
+  max_access_count INTEGER,
+  access_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expiration_date TEXT,
+  deletion_date TEXT NOT NULL,
+  disabled INTEGER NOT NULL DEFAULT 0,
+  hide_email INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_sends_user_id ON sends(user_id);
+CREATE INDEX IF NOT EXISTS idx_sends_deletion_date ON sends(deletion_date);
+
+-- Staging table for file Sends whose upload has not yet completed.
+CREATE TABLE IF NOT EXISTS sends_pending (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  notes TEXT,
+  type INTEGER NOT NULL,
+  data TEXT NOT NULL,
+  akey TEXT NOT NULL,
+  password_hash TEXT,
+  password_salt TEXT,
+  password_iter INTEGER,
+  max_access_count INTEGER,
+  access_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expiration_date TEXT,
+  deletion_date TEXT NOT NULL,
+  disabled INTEGER NOT NULL DEFAULT 0,
+  hide_email INTEGER NOT NULL DEFAULT 0
+);

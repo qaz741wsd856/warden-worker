@@ -12,22 +12,23 @@ use log;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
-use worker::{query, wasm_bindgen::JsValue, Bucket, D1Database, Env, HttpMetadata};
+use worker::{query, wasm_bindgen::JsValue, D1Database, Env, HttpMetadata};
 
 use crate::{
     auth::{Claims, JWT_VALIDATION_LEEWAY_SECS},
-    db,
+    db::{self, touch_user_updated_at},
     error::AppError,
     models::{
         attachment::{AttachmentDB, AttachmentResponse},
         cipher::{Cipher, CipherDBModel},
     },
+    notifications::{self, UpdateType},
     BaseUrl,
 };
 
 const ATTACHMENTS_BUCKET: &str = "ATTACHMENTS_BUCKET";
 const ATTACHMENTS_KV: &str = "ATTACHMENTS_KV";
-const SIZE_LEEWAY_BYTES: i64 = 1024 * 1024; // 1 MiB
+
 const DEFAULT_ATTACHMENT_TTL_SECS: i64 = 300; // 5 minutes
 const KV_MAX_VALUE_BYTES: i64 = 25 * 1024 * 1024; // 25 MiB (KV hard limit)
 
@@ -85,16 +86,17 @@ pub struct AttachmentDeleteResponse {
     pub cipher: Cipher,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum NumberOrString {
     Number(i64),
     String(String),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct AttachmentDownloadClaims {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AttachmentClaims {
     pub sub: String,
+    pub device: String,
     pub cipher_id: String,
     pub attachment_id: String,
 }
@@ -110,15 +112,29 @@ impl NumberOrString {
     pub fn into_i64(self) -> Result<i64, AppError> {
         match self {
             NumberOrString::Number(v) => Ok(v),
-            NumberOrString::String(v) => v
+            NumberOrString::String(s) => s
                 .parse::<i64>()
-                .map_err(|_| AppError::BadRequest("Invalid attachment size".to_string())),
+                .map_err(|_| AppError::BadRequest("Invalid number".into())),
+        }
+    }
+
+    #[allow(clippy::wrong_self_convention)]
+    pub fn into_i32(&self) -> Result<i32, AppError> {
+        match self {
+            NumberOrString::Number(n) => i32::try_from(*n)
+                .map_err(|_| AppError::BadRequest("Number does not fit in i32".into())),
+            NumberOrString::String(s) => s
+                .parse::<i32>()
+                .map_err(|_| AppError::BadRequest("Can't convert to number".into())),
         }
     }
 }
 
-async fn touch_cipher_updated_at(db: &D1Database, cipher_id: &str) -> Result<(), AppError> {
-    let now = now_string();
+pub(crate) async fn touch_cipher_updated_at(
+    db: &D1Database,
+    cipher_id: &str,
+    now: &str,
+) -> Result<(), AppError> {
     query!(
         db,
         "UPDATE ciphers SET updated_at = ?1 WHERE id = ?2",
@@ -174,7 +190,7 @@ pub async fn create_attachment_v2(
     .await?;
 
     let attachment_id = Uuid::new_v4().to_string();
-    let now = now_string();
+    let now = db::now_string();
 
     query!(
         &db,
@@ -193,7 +209,16 @@ pub async fn create_attachment_v2(
     .await?;
 
     // Return upload URL pointing to local upload endpoint
-    let url = upload_url(&env, &base_url, &cipher_id, &attachment_id, &claims.sub)?;
+    let token = build_upload_download_token(
+        &env,
+        &claims.sub,
+        &claims.device,
+        &cipher_id,
+        &attachment_id,
+    )?;
+    let url = format!(
+        "{base_url}/api/ciphers/{cipher_id}/attachment/{attachment_id}/azure-upload?token={token}"
+    );
     let mut cipher_response: Cipher = cipher.into();
     hydrate_cipher_attachments(&db, &env, &mut cipher_response).await?;
 
@@ -242,7 +267,7 @@ pub async fn upload_attachment_v2_data(
     }
     let db = db::get_db(&env)?;
 
-    let _cipher = ensure_cipher_for_user(&db, &cipher_id, &claims.sub).await?;
+    ensure_cipher_for_user(&db, &cipher_id, &claims.sub).await?;
 
     let mut pending = fetch_pending_attachment(&db, &attachment_id).await?;
     if pending.cipher_id != cipher_id {
@@ -255,26 +280,21 @@ pub async fn upload_attachment_v2_data(
         read_multipart(&mut multipart).await?;
     let actual_size = file_bytes.len() as i64;
 
-    // For R2 backend: validate actual size against declared value deviation
-    // For KV backend: skip this check (we trust the actual upload size)
-    if !is_kv_backend(&env) {
-        if let Err(e) = validate_size_within_declared(&pending, actual_size) {
-            query!(
-                &db,
-                "DELETE FROM attachments_pending WHERE id = ?1",
-                pending.id
-            )
-            .map_err(|_| AppError::Database)?
-            .run()
-            .await?;
-            return Err(e);
-        }
+    if actual_size != pending.file_size {
+        query!(
+            &db,
+            "DELETE FROM attachments_pending WHERE id = ?1",
+            pending.id
+        )
+        .map_err(|_| AppError::Database)?
+        .run()
+        .await?;
+        return Err(AppError::BadRequest(format!(
+            "Uploaded size ({actual_size}) does not match declared size ({})",
+            pending.file_size
+        )));
     }
 
-    // Validate capacity limits (replace with actual size)
-    enforce_limits(&db, &env, &claims.sub, actual_size, Some(&pending.id)).await?;
-
-    // Need a key
     if pending.akey.is_none() && key_override.is_none() {
         return Err(AppError::BadRequest(
             "No attachment key provided".to_string(),
@@ -284,39 +304,20 @@ pub async fn upload_attachment_v2_data(
         pending.akey = Some(k);
     }
 
-    // Save to storage (KV or R2)
     upload_to_storage(&env, &pending.r2_key(), content_type, file_bytes.to_vec()).await?;
 
-    // Finalize: move pending -> attachments and touch timestamps
-    let now = now_string();
-    query!(
-        &db,
-        "INSERT INTO attachments (id, cipher_id, file_name, file_size, akey, created_at, updated_at, organization_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        pending.id,
-        pending.cipher_id,
-        pending.file_name,
-        actual_size,
-        pending.akey,
-        pending.created_at,
-        now,
-        pending.organization_id,
-    )
-    .map_err(|_| AppError::Database)?
-    .run()
-    .await?;
+    let now = pending.finalize_pending(&db).await?;
+    touch_user_updated_at(&db, &claims.sub, &now).await?;
 
-    query!(
-        &db,
-        "DELETE FROM attachments_pending WHERE id = ?1",
-        pending.id
+    notifications::publish_cipher_update(
+        env.as_ref(),
+        &claims.sub,
+        UpdateType::SyncCipherUpdate,
+        &cipher_id,
+        &now,
+        Some(&claims.device),
     )
-    .map_err(|_| AppError::Database)?
-    .run()
-    .await?;
-
-    touch_cipher_updated_at(&db, &cipher_id).await?;
-    db::touch_user_updated_at(&db, &claims.sub).await?;
+    .await;
 
     Ok(Json(()))
 }
@@ -355,7 +356,7 @@ pub async fn upload_attachment_legacy(
     enforce_limits(&db, &env, &claims.sub, actual_size, None).await?;
 
     let attachment_id = Uuid::new_v4().to_string();
-    let now = now_string();
+    let now = db::now_string();
 
     query!(
         &db,
@@ -382,8 +383,18 @@ pub async fn upload_attachment_legacy(
     )
     .await?;
 
-    touch_cipher_updated_at(&db, &cipher_id).await?;
-    db::touch_user_updated_at(&db, &claims.sub).await?;
+    touch_cipher_updated_at(&db, &cipher_id, &now).await?;
+    db::touch_user_updated_at(&db, &claims.sub, &now).await?;
+
+    notifications::publish_cipher_update(
+        env.as_ref(),
+        &claims.sub,
+        UpdateType::SyncCipherUpdate,
+        &cipher_id,
+        &now,
+        Some(&claims.device),
+    )
+    .await;
 
     // reload cipher to return fresh updated_at and attachments state
     let mut cipher_response: Cipher = cipher.into();
@@ -416,7 +427,16 @@ pub async fn get_attachment(
         ));
     }
 
-    let url = download_url(&env, &base_url, &cipher_id, &attachment_id, &claims.sub)?;
+    let token = build_upload_download_token(
+        &env,
+        &claims.sub,
+        &claims.device,
+        &cipher_id,
+        &attachment_id,
+    )?;
+    let url = format!(
+        "{base_url}/api/ciphers/{cipher_id}/attachment/{attachment_id}/download?token={token}"
+    );
     Ok(Json(attachment.to_response(Some(url))))
 }
 
@@ -451,8 +471,19 @@ pub async fn delete_attachment(
         .run()
         .await?;
 
-    touch_cipher_updated_at(&db, &cipher_id).await?;
-    db::touch_user_updated_at(&db, &claims.sub).await?;
+    let now = db::now_string();
+    touch_cipher_updated_at(&db, &cipher_id, &now).await?;
+    db::touch_user_updated_at(&db, &claims.sub, &now).await?;
+
+    notifications::publish_cipher_update(
+        env.as_ref(),
+        &claims.sub,
+        UpdateType::SyncCipherUpdate,
+        &cipher_id,
+        &now,
+        Some(&claims.device),
+    )
+    .await;
 
     // Reload cipher to return fresh updated_at and attachments state
     let mut cipher_response: Cipher = ensure_cipher_for_user(&db, &cipher_id, &claims.sub)
@@ -506,17 +537,6 @@ fn is_not_found_error(err: &worker::Error) -> bool {
     msg.contains("NoSuchKey") || msg.contains("404") || msg.contains("NotFound")
 }
 
-pub(crate) async fn delete_r2_objects(bucket: &Bucket, keys: &[String]) -> Result<(), AppError> {
-    for key in keys {
-        if let Err(err) = bucket.delete(key).await {
-            if !is_not_found_error(&err) {
-                return Err(AppError::Worker(err));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Delete objects from storage (KV or R2 based on configured backend)
 pub(crate) async fn delete_storage_objects(env: &Env, keys: &[String]) -> Result<(), AppError> {
     match get_storage_backend(env) {
@@ -535,7 +555,15 @@ pub(crate) async fn delete_storage_objects(env: &Env, keys: &[String]) -> Result
             let bucket = env
                 .bucket(ATTACHMENTS_BUCKET)
                 .map_err(|_| AppError::Internal)?;
-            delete_r2_objects(&bucket, keys).await
+            for key in keys {
+                if let Err(err) = bucket.delete(key).await {
+                    if !is_not_found_error(&err) {
+                        log::error!("R2 delete error for key '{}': {:?}", key, err);
+                        return Err(AppError::Worker(err));
+                    }
+                }
+            }
+            Ok(())
         }
         None => Ok(()), // No-op if attachments not enabled
     }
@@ -617,25 +645,7 @@ pub(crate) async fn list_attachment_keys_for_soft_deleted_before(
     Ok(map_rows_to_keys(rows))
 }
 
-fn download_url(
-    env: &Env,
-    base_url: &str,
-    cipher_id: &str,
-    attachment_id: &str,
-    user_id: &str,
-) -> Result<String, AppError> {
-    let token = build_upload_download_token(env, user_id, cipher_id, attachment_id)?;
-    let normalized_base = base_url.trim_end_matches('/');
-    Ok(format!(
-        "{normalized_base}/api/ciphers/{cipher_id}/attachment/{attachment_id}/download?token={token}"
-    ))
-}
-
-fn now_string() -> String {
-    Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
-}
-
-async fn ensure_cipher_for_user(
+pub(crate) async fn ensure_cipher_for_user(
     db: &D1Database,
     cipher_id: &str,
     user_id: &str,
@@ -662,7 +672,10 @@ async fn ensure_cipher_for_user(
     Ok(cipher)
 }
 
-async fn fetch_attachment(db: &D1Database, attachment_id: &str) -> Result<AttachmentDB, AppError> {
+pub(crate) async fn fetch_attachment(
+    db: &D1Database,
+    attachment_id: &str,
+) -> Result<AttachmentDB, AppError> {
     db.prepare("SELECT * FROM attachments WHERE id = ?1")
         .bind(&[attachment_id.into()])?
         .first(None)
@@ -671,7 +684,7 @@ async fn fetch_attachment(db: &D1Database, attachment_id: &str) -> Result<Attach
         .ok_or_else(|| AppError::NotFound("Attachment not found".to_string()))
 }
 
-async fn fetch_pending_attachment(
+pub(crate) async fn fetch_pending_attachment(
     db: &D1Database,
     attachment_id: &str,
 ) -> Result<AttachmentDB, AppError> {
@@ -717,27 +730,8 @@ fn build_attachment_map(
     map
 }
 
-async fn upload_to_r2(
-    bucket: &Bucket,
-    key: &str,
-    content_type: Option<String>,
-    data: Vec<u8>,
-) -> Result<(), AppError> {
-    let mut builder = bucket.put(key, data);
-
-    if let Some(ct) = content_type {
-        builder = builder.http_metadata(HttpMetadata {
-            content_type: Some(ct),
-            ..Default::default()
-        });
-    }
-
-    builder.execute().await.map_err(AppError::Worker)?;
-    Ok(())
-}
-
 /// Upload data to storage (KV or R2 based on configured backend)
-async fn upload_to_storage(
+pub(crate) async fn upload_to_storage(
     env: &Env,
     key: &str,
     _content_type: Option<String>,
@@ -762,7 +756,15 @@ async fn upload_to_storage(
             let bucket = env
                 .bucket(ATTACHMENTS_BUCKET)
                 .map_err(|_| AppError::Internal)?;
-            upload_to_r2(&bucket, key, _content_type, data).await
+            let mut builder = bucket.put(key, data);
+            if let Some(ct) = _content_type {
+                builder = builder.http_metadata(HttpMetadata {
+                    content_type: Some(ct),
+                    ..Default::default()
+                });
+            }
+            builder.execute().await.map_err(AppError::Worker)?;
+            Ok(())
         }
         None => Err(AppError::BadRequest(
             "Attachments are not enabled".to_string(),
@@ -810,31 +812,10 @@ async fn read_multipart(
     Ok((file_bytes, content_type, key, file_name))
 }
 
-fn validate_size_within_declared(
-    attachment: &AttachmentDB,
-    actual_size: i64,
-) -> Result<(), AppError> {
-    let max_size = attachment
-        .file_size
-        .checked_add(SIZE_LEEWAY_BYTES)
-        .ok_or_else(|| AppError::BadRequest("Attachment size overflow".to_string()))?;
-    let min_size = attachment
-        .file_size
-        .checked_sub(SIZE_LEEWAY_BYTES)
-        .ok_or_else(|| AppError::BadRequest("Attachment size overflow".to_string()))?;
-
-    if actual_size < min_size || actual_size > max_size {
-        return Err(AppError::BadRequest(format!(
-            "Attachment size mismatch (expected within [{min_size}, {max_size}], got {actual_size})"
-        )));
-    }
-
-    Ok(())
-}
-
 fn build_upload_download_token(
     env: &Env,
     user_id: &str,
+    device: &str,
     cipher_id: &str,
     attachment_id: &str,
 ) -> Result<String, AppError> {
@@ -858,8 +839,9 @@ fn build_upload_download_token(
         .timestamp_opt(exp, 0)
         .single()
         .ok_or_else(|| AppError::Internal)?;
-    let mut claims = JwtClaims::new(AttachmentDownloadClaims {
+    let mut claims = JwtClaims::new(AttachmentClaims {
         sub: user_id.to_string(),
+        device: device.to_string(),
         cipher_id: cipher_id.to_string(),
         attachment_id: attachment_id.to_string(),
     });
@@ -872,21 +854,7 @@ fn build_upload_download_token(
         .map_err(|_| AppError::Crypto("Failed to create attachment token".to_string()))
 }
 
-fn upload_url(
-    env: &Env,
-    base_url: &str,
-    cipher_id: &str,
-    attachment_id: &str,
-    user_id: &str,
-) -> Result<String, AppError> {
-    let token = build_upload_download_token(env, user_id, cipher_id, attachment_id)?;
-    let normalized_base = base_url.trim_end_matches('/');
-    Ok(format!(
-        "{normalized_base}/api/ciphers/{cipher_id}/attachment/{attachment_id}/azure-upload?token={token}"
-    ))
-}
-
-fn jwt_secret(env: &Env) -> Result<String, AppError> {
+pub(crate) fn jwt_secret(env: &Env) -> Result<String, AppError> {
     Ok(env.secret("JWT_SECRET")?.to_string())
 }
 

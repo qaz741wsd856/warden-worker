@@ -334,6 +334,8 @@ pub struct RotateAccountKeys {
 pub struct RotateAccountData {
     pub ciphers: Vec<crate::models::cipher::CipherRequestData>,
     pub folders: Vec<RotateFolderData>,
+    #[serde(default)]
+    pub sends: Vec<crate::models::send::SendRequestData>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -342,6 +344,7 @@ pub struct RotateFolderData {
     // There is a bug in 2024.3.x which adds a `null` item.
     // To bypass this we allow an Option here, but skip it during the updates
     // See: https://github.com/bitwarden/clients/issues/8453
+    #[serde(default, deserialize_with = "super::deser_opt_nonempty_str")]
     pub id: Option<String>,
     pub name: String,
 }

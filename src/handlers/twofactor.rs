@@ -16,7 +16,7 @@ use crate::{
     models::user::{PasswordOrOtpData, User},
 };
 
-/// List all 2FA records for a user (includes Remember tokens, excludes atype >= 1000).
+/// List all 2FA records for a user (excludes atype >= 1000).
 pub(crate) async fn list_user_twofactors(
     db: &worker::D1Database,
     user_id: &str,

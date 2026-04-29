@@ -1,5 +1,4 @@
 use axum::{extract::State, Json};
-use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -11,6 +10,7 @@ use crate::error::AppError;
 use crate::models::cipher::{Cipher, CipherData};
 use crate::models::folder::Folder;
 use crate::models::import::ImportRequest;
+use crate::notifications::{self, UpdateType};
 
 use super::get_batch_size;
 
@@ -23,8 +23,7 @@ pub async fn import_data(
     Json(data): Json<ImportRequest>,
 ) -> Result<Json<()>, AppError> {
     let db = db::get_db(&env)?;
-    let now = Utc::now();
-    let now = now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let now = db::now_string();
     let batch_size = get_batch_size(&env);
 
     // Get existing folders for this user
@@ -142,6 +141,7 @@ pub async fn import_data(
             favorite: import_cipher.favorite.unwrap_or(false),
             folder_id,
             deleted_at: None,
+            archived_at: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             object: "cipher".to_string(),
@@ -177,7 +177,16 @@ pub async fn import_data(
         db::execute_in_batches(&db, cipher_statements, batch_size).await?;
     }
 
-    touch_user_updated_at(&db, &claims.sub).await?;
+    touch_user_updated_at(&db, &claims.sub, &now).await?;
+
+    notifications::publish_user_update(
+        env.as_ref(),
+        &claims.sub,
+        UpdateType::SyncVault,
+        &now,
+        Some(&claims.device),
+    )
+    .await;
 
     Ok(Json(()))
 }
