@@ -52,6 +52,12 @@ if [ -z "${TOOLCHAIN}" ]; then
   echo "ERROR: could not read [toolchain].channel from rust-toolchain.toml" >&2
   exit 1
 fi
+# Pin to this toolchain explicitly so rustup uses it directly and IGNORES
+# rust-toolchain.toml. That file lists `components = ["rustfmt", "clippy"]`,
+# which rustup would otherwise lazily download on the first in-repo cargo
+# command -- slow (clippy is large) and unnecessary for a release build.
+# We install the wasm32 target explicitly below, so nothing is lost.
+export RUSTUP_TOOLCHAIN="${TOOLCHAIN}"
 echo "Installing Rust ${TOOLCHAIN} + wasm32-unknown-unknown"
 rustup toolchain install "${TOOLCHAIN}" --profile minimal --target wasm32-unknown-unknown
 

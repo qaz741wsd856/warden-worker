@@ -35,6 +35,13 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 # put it on PATH so `wrangler deploy` can re-run worker-build via [build].
 export PATH="$HOME/.cargo/bin:$PATH"
 
+# Pin to the toolchain directly so wrangler's worker-build re-run bypasses
+# rust-toolchain.toml and does not re-download its clippy/rustfmt components.
+if [ -f rust-toolchain.toml ]; then
+  RUSTUP_TOOLCHAIN="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+  export RUSTUP_TOOLCHAIN
+fi
+
 WRANGLER_VERSION="${WRANGLER_VERSION:-4.82.1}"
 D1_NAME="${D1_NAME:-vault1}"
 SEED_GLOBAL_DOMAINS="${SEED_GLOBAL_DOMAINS:-true}"
