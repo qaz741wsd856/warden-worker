@@ -189,17 +189,27 @@ Add the following secrets to your GitHub repository (`Settings > Secrets and var
 
 #### How to Get Your Cloudflare API Token
 
-The `CLOUDFLARE_API_TOKEN` requires the following permissions:
-- **Edit Cloudflare Workers**: Required for deploying the Worker
-- **Edit D1**: Required for database migrations and backups
-- **Edit KV**: Required for attachments storage (if using KV)
+The token needs the permissions below. Note that Cloudflare has no permission literally named "Workers" — deploying a Worker is granted by **Workers Scripts**, and all of these live under the **Account** scope (not **Zone**), which is a common point of confusion when building a custom token.
+
+| Scope | Permission | Access | Why |
+|-------|-----------|--------|-----|
+| Account | **Workers Scripts** | Edit | Deploy the Worker |
+| Account | **D1** | Edit | Run D1 migrations / bootstrap (and backups) |
+| Account | **Workers KV Storage** | Edit | KV attachments storage |
+| Account | **Account Settings** | Read | Required by wrangler |
+| Account | **Workers R2 Storage** | Edit | *Only if* using R2 for attachments (`R2_NAME`) |
+
+**Easiest path (recommended):**
 
 1. Visit [https://dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
 2. Click **Create Token**
-3. Use the **Edit Cloudflare Workers** template
-4. Add **Account** → **D1** under `Permissions`
+3. Use the **Edit Cloudflare Workers** template (this auto-selects Workers Scripts, Workers KV Storage, Workers R2 Storage, Account Settings, and Workers Routes)
+4. Add one more permission row: set the group selector to **Account**, then choose **D1** → **Edit** (the template does not include D1)
 5. Select `Account Resources` and `Zone Resources`
 6. Click **Continue to Summary** and then **Create Token**
+
+> [!TIP]
+> If "Workers Scripts" doesn't appear in the permission dropdown, the row's left selector is probably set to **Zone** — switch it to **Account**.
 
 ### Optional Variables
 
