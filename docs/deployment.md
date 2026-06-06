@@ -1,6 +1,10 @@
 # Deployment
 
-This page covers the two deployment paths. Pick the one that fits your workflow and infrastructure.
+This page covers the available deployment paths. Pick the one that fits your workflow and infrastructure.
+
+- **CLI** — build and `wrangler deploy` from your machine.
+- **Cloudflare Workers Builds** — connect the repo in the Cloudflare dashboard; `git push` builds and deploys on Cloudflare. No GitHub Actions needed.
+- **GitHub Actions** — build and deploy from CI (kept as a manual fallback).
 
 ## CLI Deployment
 
@@ -113,9 +117,58 @@ This page covers the two deployment paths. Pick the one that fits your workflow 
 
    By default, the `*.workers.dev` domain is disabled, since it may throw 1101 error. It's highly recommended to use a custom domain instead; see [Configure Custom Domain](../README.md#configure-custom-domain-optional) for more details.
 
+## Cloudflare Workers Builds (Dashboard)
+
+[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) is Cloudflare's native Git integration: connect the repository once in the dashboard and every push builds and deploys the Worker on Cloudflare — no GitHub Actions, no API token stored in GitHub.
+
+Because this is a Rust→WASM Worker (the Workers Builds image does not ship Rust) and the frontend, database id, and migrations are all resolved at build time, the whole pipeline is encapsulated in [`scripts/cf-build.sh`](../scripts/cf-build.sh). It installs the Rust toolchain, downloads the Web Vault frontend, substitutes the D1 database id, bootstraps/migrates D1, optionally seeds global domains, and compiles the Worker.
+
+### Setup
+
+1. In the Cloudflare dashboard, go to **Workers & Pages → `warden-worker` → Settings → Build**, then **Connect** your GitHub/GitLab repository (production branch: `main`).
+
+2. Set the build commands:
+
+   | Field | Value |
+   |-------|-------|
+   | **Build command** | `bash scripts/cf-build.sh` |
+   | **Deploy command** | `export PATH="$HOME/.cargo/bin:$PATH" && npx --yes wrangler@4.82.1 deploy` |
+
+   > The Deploy command prepends `$HOME/.cargo/bin` to `PATH` so that `wrangler deploy` can find `cargo`/`worker-build` (installed during the build phase) when it re-runs `wrangler.toml`'s `[build]` step. Keep the pinned `wrangler` version in sync with `WRANGLER_VERSION`.
+
+3. Add **Build variables and secrets** (Settings → Build → *Variables and Secrets*):
+
+   | Name | Type | Required | Description |
+   |------|------|----------|-------------|
+   | `D1_DATABASE_ID` | variable | yes | Production D1 database id (substituted into `wrangler.toml`) |
+   | `CLOUDFLARE_ACCOUNT_ID` | variable | yes | Your Cloudflare account id |
+   | `CLOUDFLARE_API_TOKEN` | secret | yes | Token with **Workers** + **D1** (+ **KV**) edit permissions — used for migrations/seed and deploy |
+   | `BW_WEB_VERSION` | variable | no | `bw_web_builds` tag (default `v2026.4.1`); set `latest` to track upstream |
+   | `WRANGLER_VERSION` | variable | no | Pinned wrangler (default `4.82.1`; match the Deploy command) |
+   | `WORKER_BUILD_VERSION` | variable | no | Pinned worker-build (default `0.8.3`; match the `worker` dep in `Cargo.toml`) |
+   | `R2_NAME` | variable | no | R2 bucket name; enables the `ATTACHMENTS_BUCKET` binding |
+   | `SEED_GLOBAL_DOMAINS` | variable | no | `false` to skip seeding global equivalent domains |
+   | `GLOBAL_DOMAINS_URL` | variable | no | Pin a specific `global_domains.json` source |
+   | `SKIP_D1` | variable | no | `1` to skip all D1 bootstrap/migrate/seed steps |
+
+   See [Required Secrets](#required-secrets) below for how to obtain the account id and API token (the permissions are identical to the GitHub Actions path).
+
+4. Set the runtime **Worker** secrets (these are *not* build variables — set them under the Worker's **Settings → Variables and Secrets**, not the build config): `ALLOWED_EMAILS`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, plus any optional push settings. See step 7 of [CLI Deployment](#cli-deployment).
+
+5. **Push to `main`.** Cloudflare runs `scripts/cf-build.sh` then `wrangler deploy`. Watch progress under the Worker's **Builds** tab.
+
+> [!NOTE]
+> The first build is slow (it compiles the Rust toolchain dependencies and `worker-build` from scratch). Subsequent builds reuse the build cache and are faster.
+
+> [!IMPORTANT]
+> Once Workers Builds is connected, the `Build` GitHub Actions workflow no longer deploys on push (its `push` trigger is disabled) to avoid double-deploying `main`. You can still run it manually from the Actions tab.
+
 ## CI/CD Deployment with GitHub Actions
 
-This project includes GitHub Actions workflows for automated deployment. This is the recommended approach for production environments as it ensures consistent builds and deployments.
+This project includes GitHub Actions workflows for automated deployment. This is an alternative to Workers Builds; it ensures consistent builds and deployments from CI.
+
+> [!NOTE]
+> The production `Build` workflow's `push` trigger is disabled in favor of Workers Builds (above). To use GitHub Actions for production instead, either run it manually (Actions → *Build* → *Run workflow*) or re-enable the `push` trigger in `.github/workflows/push-cloudflare.yaml` and disconnect Workers Builds to avoid double-deploys.
 
 ### Required Secrets
 

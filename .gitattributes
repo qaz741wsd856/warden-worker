@@ -1,0 +1,2 @@
+# Shell scripts must keep LF endings so they run on the Linux build/CI image.
+*.sh text eol=lf
