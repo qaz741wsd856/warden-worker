@@ -3,11 +3,8 @@ permissions:
     contents: read
 
 on:
-  # Production deploys now run via Cloudflare Workers Builds (the dashboard Git
-  # integration) using scripts/cf-build.sh; see docs/deployment.md.
-  # The push trigger is intentionally disabled so this workflow does not
-  # double-deploy `main` alongside Workers Builds. It remains available as a
-  # manual fallback via the Actions tab ("Run workflow").
+  push:
+    branches: [main, uat, release*]
   workflow_dispatch:
 
 jobs:

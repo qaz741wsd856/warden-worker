@@ -3,8 +3,8 @@
 This page covers the available deployment paths. Pick the one that fits your workflow and infrastructure.
 
 - **CLI** — build and `wrangler deploy` from your machine.
-- **Cloudflare Workers Builds** — connect the repo in the Cloudflare dashboard; `git push` builds and deploys on Cloudflare. No GitHub Actions needed.
-- **GitHub Actions** — build and deploy from CI (kept as a manual fallback).
+- **GitHub Actions** — build and deploy from CI on every push; the same Cloudflare API token also drives the daily D1 backup workflow.
+- **Cloudflare Workers Builds** — connect the repo in the Cloudflare dashboard so `git push` builds and deploys on Cloudflare. Opt-in; see the trade-offs in that section.
 
 ## CLI Deployment
 
@@ -117,16 +117,22 @@ This page covers the available deployment paths. Pick the one that fits your wor
 
    By default, the `*.workers.dev` domain is disabled, since it may throw 1101 error. It's highly recommended to use a custom domain instead; see [Configure Custom Domain](../README.md#configure-custom-domain-optional) for more details.
 
-## Cloudflare Workers Builds (Dashboard)
+## Cloudflare Workers Builds (Dashboard) — Optional Alternative
 
-[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) is Cloudflare's native Git integration: connect the repository once in the dashboard and every push builds and deploys the Worker on Cloudflare — no GitHub Actions, no API token stored in GitHub.
+[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) is Cloudflare's native Git integration: connect the repository once in the dashboard and every push builds and deploys the Worker on Cloudflare, without a GitHub Actions deploy run.
+
+> [!NOTE]
+> This is an **optional alternative** to the default [GitHub Actions](#cicd-deployment-with-github-actions) flow, not a replacement. Two things to weigh before adopting it:
+> - **Backups still need a GitHub token.** The daily `Backup D1 Database` workflow (`.github/workflows/backup-d1.yaml`) authenticates with the `CLOUDFLARE_API_TOKEN` GitHub secret, independent of how you deploy. Adopting Workers Builds does **not** remove that secret — you'd maintain *two* credentials: the Cloudflare build token (deploy) and the GitHub token (backups).
+> - **Avoid double-deploys.** If you connect Workers Builds, disable the GitHub Actions `Build` workflow (Actions tab → **Build** → **Disable workflow**, or remove its `push:` trigger) so `main` is not deployed twice.
+> - **Slow deployment speed.** The Cloudflare build environment has low RAM, CPU, and the deployment will cost you 7 minutes or so, using up your Worker build time.
 
 Because this is a Rust→WASM Worker (the Workers Builds image does not ship Rust) and the frontend, database id, and migrations are all resolved at build time, the pipeline is encapsulated in two scripts:
 
 - [`scripts/cf-build.sh`](../scripts/cf-build.sh) (**Build** phase) — installs the Rust toolchain, downloads the Web Vault frontend, substitutes the D1 database id, and compiles the Worker.
 - [`scripts/cf-deploy.sh`](../scripts/cf-deploy.sh) (**Deploy** phase) — bootstraps/migrates D1, optionally seeds global domains, then runs `wrangler deploy`.
 
-**No separate `CLOUDFLARE_API_TOKEN` is needed.** Workers Builds auto-generates a *build token* and uses it as the credential for the deploy phase. Because the D1 migrations run in that same deploy phase (`cf-deploy.sh`), they reuse that one token — you just grant it D1 access once (step 2 below).
+**No separate `CLOUDFLARE_API_TOKEN` is needed for the deploy itself.** Workers Builds auto-generates a *build token* and uses it as the credential for the deploy phase. Because the D1 migrations run in that same deploy phase (`cf-deploy.sh`), they reuse that one token — you just grant it D1 access once (step 2 below). (The separate daily backup workflow still relies on the `CLOUDFLARE_API_TOKEN` GitHub secret — see the note above.)
 
 ### Setup
 
@@ -168,14 +174,11 @@ Because this is a Rust→WASM Worker (the Workers Builds image does not ship Rus
 > If you set `SKIP_D1=1` (or skip step 2), the Worker still builds and deploys, but D1 migrations are **not** applied automatically — apply them yourself when the schema changes (`npx wrangler d1 migrations apply vault1 --remote`), or run the GitHub Actions `Build` workflow manually.
 
 > [!IMPORTANT]
-> Once Workers Builds is connected, the `Build` GitHub Actions workflow no longer deploys on push (its `push` trigger is disabled) to avoid double-deploying `main`. You can still run it manually from the Actions tab.
+> The default `Build` workflow deploys on every push to `main`. If you adopt Workers Builds, **disable that workflow** (repository **Actions** tab → select **Build** → **Disable workflow**, or remove the `push:` trigger in `.github/workflows/push-cloudflare.yaml`) so `main` is not deployed twice. Leave the `Backup D1 Database` workflow enabled — it still runs on its own schedule.
 
 ## CI/CD Deployment with GitHub Actions
 
-This project includes GitHub Actions workflows for automated deployment. This is an alternative to Workers Builds; it ensures consistent builds and deployments from CI.
-
-> [!NOTE]
-> The production `Build` workflow's `push` trigger is disabled in favor of Workers Builds (above). To use GitHub Actions for production instead, either run it manually (Actions → *Build* → *Run workflow*) or re-enable the `push` trigger in `.github/workflows/push-cloudflare.yaml` and disconnect Workers Builds to avoid double-deploys.
+This project includes GitHub Actions workflows for automated deployment. **This is the recommended default approach** for production: every push to `main` builds and deploys, and the same `CLOUDFLARE_API_TOKEN` secret also drives the daily `Backup D1 Database` workflow (`.github/workflows/backup-d1.yaml`) — so a single token covers both deploy and backups.
 
 ### Required Secrets
 
