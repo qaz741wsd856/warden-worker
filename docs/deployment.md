@@ -4,7 +4,7 @@ This page covers the available deployment paths. Pick the one that fits your wor
 
 - **CLI** — build and `wrangler deploy` from your machine.
 - **GitHub Actions** — build and deploy from CI on every push; the same Cloudflare API token also drives the daily D1 backup workflow.
-- **Cloudflare Workers Builds** — connect the repo in the Cloudflare dashboard so `git push` builds and deploys on Cloudflare. Opt-in; see the trade-offs in that section.
+- **Cloudflare Workers Builds** — connect the repo in the Cloudflare dashboard so `git push` builds and deploys on Cloudflare.
 
 ## CLI Deployment
 
@@ -117,68 +117,9 @@ This page covers the available deployment paths. Pick the one that fits your wor
 
    By default, the `*.workers.dev` domain is disabled, since it may throw 1101 error. It's highly recommended to use a custom domain instead; see [Configure Custom Domain](../README.md#configure-custom-domain-optional) for more details.
 
-## Cloudflare Workers Builds (Dashboard) — Optional Alternative
-
-[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) is Cloudflare's native Git integration: connect the repository once in the dashboard and every push builds and deploys the Worker on Cloudflare, without a GitHub Actions deploy run.
-
-> [!NOTE]
-> This is an **optional alternative** to the default [GitHub Actions](#cicd-deployment-with-github-actions) flow, not a replacement. Two things to weigh before adopting it:
-> - **Backups still need a GitHub token.** The daily `Backup D1 Database` workflow (`.github/workflows/backup-d1.yaml`) authenticates with the `CLOUDFLARE_API_TOKEN` GitHub secret, independent of how you deploy. Adopting Workers Builds does **not** remove that secret — you'd maintain *two* credentials: the Cloudflare build token (deploy) and the GitHub token (backups).
-> - **Avoid double-deploys.** If you connect Workers Builds, disable the GitHub Actions `Build` workflow (Actions tab → **Build** → **Disable workflow**, or remove its `push:` trigger) so `main` is not deployed twice.
-> - **Slow deployment speed.** The Cloudflare build environment has low RAM, CPU, and the deployment will cost you 7 minutes or so, using up your Worker build time.
-
-Because this is a Rust→WASM Worker (the Workers Builds image does not ship Rust) and the frontend, database id, and migrations are all resolved at build time, the pipeline is encapsulated in two scripts:
-
-- [`scripts/cf-build.sh`](../scripts/cf-build.sh) (**Build** phase) — installs the Rust toolchain, downloads the Web Vault frontend, substitutes the D1 database id, and compiles the Worker.
-- [`scripts/cf-deploy.sh`](../scripts/cf-deploy.sh) (**Deploy** phase) — bootstraps/migrates D1, optionally seeds global domains, then runs `wrangler deploy`.
-
-**No separate `CLOUDFLARE_API_TOKEN` is needed for the deploy itself.** Workers Builds auto-generates a *build token* and uses it as the credential for the deploy phase. Because the D1 migrations run in that same deploy phase (`cf-deploy.sh`), they reuse that one token — you just grant it D1 access once (step 2 below). (The separate daily backup workflow still relies on the `CLOUDFLARE_API_TOKEN` GitHub secret — see the note above.)
-
-### Setup
-
-1. In the Cloudflare dashboard, go to **Workers & Pages → `warden-worker` → Settings → Build**, then **Connect** your GitHub/GitLab repository (production branch: `main`). This auto-generates the build token.
-
-2. **Grant the build token D1 access** (one-time). The auto-generated token includes Workers Scripts / KV / R2 edit, but **not D1**, so migrations would fail with an authorization error. Go to [My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens), edit the token named **"Workers Builds"**, and add a permission row: **Account → D1 → Edit**. (If you'd rather not run migrations in CI, skip this and set `SKIP_D1=1` in step 4 — see the note below.)
-
-3. Set the build commands:
-
-   | Field | Value |
-   |-------|-------|
-   | **Build command** | `bash scripts/cf-build.sh` |
-   | **Deploy command** | `bash scripts/cf-deploy.sh` |
-
-   > `cf-deploy.sh` prepends `$HOME/.cargo/bin` to `PATH` so that `wrangler deploy` can find `cargo`/`worker-build` (installed during the build phase) when it re-runs `wrangler.toml`'s `[build]` step.
-
-4. Add **Build variables** (Settings → Build → *Variables and Secrets*). None are secrets — the deploy credential is the build token from step 2.
-
-   | Name | Required | Description |
-   |------|----------|-------------|
-   | `D1_DATABASE_ID` | yes | Production D1 database id (substituted into `wrangler.toml`) |
-   | `BW_WEB_VERSION` | no | `bw_web_builds` tag (default `v2026.4.1`); set `latest` to track upstream |
-   | `WRANGLER_VERSION` | no | Pinned wrangler (default `4.82.1`) |
-   | `WORKER_BUILD_VERSION` | no | Pinned worker-build (default `0.8.3`; match the `worker` dep in `Cargo.toml`) |
-   | `R2_NAME` | no | R2 bucket name; enables the `ATTACHMENTS_BUCKET` binding |
-   | `SEED_GLOBAL_DOMAINS` | no | `false` to skip seeding global equivalent domains |
-   | `GLOBAL_DOMAINS_URL` | no | Pin a specific `global_domains.json` source |
-   | `SKIP_D1` | no | `1` to skip all D1 bootstrap/migrate/seed steps (deploy still runs) |
-   | `CLOUDFLARE_ACCOUNT_ID` | no | Set only if wrangler cannot infer the account during migrations |
-
-5. Set the runtime **Worker** secrets (these are *not* build variables — set them under the Worker's **Settings → Variables and Secrets**, not the build config): `ALLOWED_EMAILS`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, plus any optional push settings. See step 7 of [CLI Deployment](#cli-deployment).
-
-6. **Push to `main`.** Cloudflare runs `scripts/cf-build.sh` then `scripts/cf-deploy.sh`. Watch progress under the Worker's **Builds** tab.
-
-> [!NOTE]
-> The first build is slow (it compiles the Rust toolchain dependencies and `worker-build` from scratch). Subsequent builds reuse the build cache and are faster.
-
-> [!NOTE]
-> If you set `SKIP_D1=1` (or skip step 2), the Worker still builds and deploys, but D1 migrations are **not** applied automatically — apply them yourself when the schema changes (`npx wrangler d1 migrations apply vault1 --remote`), or run the GitHub Actions `Build` workflow manually.
-
-> [!IMPORTANT]
-> The default `Build` workflow deploys on every push to `main`. If you adopt Workers Builds, **disable that workflow** (repository **Actions** tab → select **Build** → **Disable workflow**, or remove the `push:` trigger in `.github/workflows/push-cloudflare.yaml`) so `main` is not deployed twice. Leave the `Backup D1 Database` workflow enabled — it still runs on its own schedule.
-
 ## CI/CD Deployment with GitHub Actions
 
-This project includes GitHub Actions workflows for automated deployment. **This is the recommended default approach** for production: every push to `main` builds and deploys, and the same `CLOUDFLARE_API_TOKEN` secret also drives the daily `Backup D1 Database` workflow (`.github/workflows/backup-d1.yaml`) — so a single token covers both deploy and backups.
+This project includes GitHub Actions workflows for automated deployment. **This is the recommended default approach** for production: every push to `main` builds and deploys, and the same `CLOUDFLARE_API_TOKEN` secret also drives the daily [`Backup D1 Database`](/.github/workflows/backup-d1.yaml) workflow  — so a single token covers both deploy and backups.
 
 ### Required Secrets
 
@@ -199,27 +140,17 @@ Add the following secrets to your GitHub repository (`Settings > Secrets and var
 
 #### How to Get Your Cloudflare API Token
 
-The token needs the permissions below. Note that Cloudflare has no permission literally named "Workers" — deploying a Worker is granted by **Workers Scripts**, and all of these live under the **Account** scope (not **Zone**), which is a common point of confusion when building a custom token.
-
-| Scope | Permission | Access | Why |
-|-------|-----------|--------|-----|
-| Account | **Workers Scripts** | Edit | Deploy the Worker |
-| Account | **D1** | Edit | Run D1 migrations / bootstrap (and backups) |
-| Account | **Workers KV Storage** | Edit | KV attachments storage |
-| Account | **Account Settings** | Read | Required by wrangler |
-| Account | **Workers R2 Storage** | Edit | *Only if* using R2 for attachments (`R2_NAME`) |
-
-**Easiest path (recommended):**
+The `CLOUDFLARE_API_TOKEN` requires the following permissions:
+- **Edit Cloudflare Workers**: Required for deploying the Worker
+- **Edit D1**: Required for database migrations and backups
+- **Edit KV**: Required for attachments storage (if using KV)
 
 1. Visit [https://dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
 2. Click **Create Token**
-3. Use the **Edit Cloudflare Workers** template (this auto-selects Workers Scripts, Workers KV Storage, Workers R2 Storage, Account Settings, and Workers Routes)
-4. Add one more permission row: set the group selector to **Account**, then choose **D1** → **Edit** (the template does not include D1)
+3. Use the **Edit Cloudflare Workers** template
+4. Add **Account** → **D1** → **Edit** under `Permissions`
 5. Select `Account Resources` and `Zone Resources`
 6. Click **Continue to Summary** and then **Create Token**
-
-> [!TIP]
-> If "Workers Scripts" doesn't appear in the permission dropdown, the row's left selector is probably set to **Zone** — switch it to **Account**.
 
 ### Optional Variables
 
@@ -284,3 +215,62 @@ If you skip seeding, `/api/settings/domains` and `/api/sync` will return `global
 If you want to show a 'Create account' button in frontend, you can add `DISABLE_USER_REGISTRATION` as `text` and set it to `false`. Check [Environment Variables](../README.md#environment-variables) for more details.
 
 By default, the `*.workers.dev` domain is disabled, since it may throw 1101 error. It's highly recommended to use a custom domain instead; see [Configure Custom Domain](../README.md#configure-custom-domain-optional) for more details.
+
+## Cloudflare Workers Builds (Dashboard) — Optional Alternative
+
+[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) is Cloudflare's native Git integration: connect the repository once in the dashboard and every push builds and deploys the Worker on Cloudflare, without a GitHub Actions deploy run.
+
+> [!NOTE]
+> This is an **optional alternative** to the default [GitHub Actions](#cicd-deployment-with-github-actions) flow, not a replacement. Two things to weigh before adopting it:
+> - **Backups still need a GitHub token.** The daily `Backup D1 Database` workflow (`.github/workflows/backup-d1.yaml`) authenticates with the `CLOUDFLARE_API_TOKEN` GitHub secret, independent of how you deploy. Adopting Workers Builds does **not** remove that secret — you'd maintain *two* credentials: the Cloudflare build token (deploy) and the GitHub token (backups).
+> - **Avoid double-deploys.** If you connect Workers Builds, disable the GitHub Actions `Build` workflow (Actions tab → **Build** → **Disable workflow**, or remove its `push:` trigger) so `main` is not deployed twice.
+> - **Slow deployment speed.** The Cloudflare build environment has low RAM, CPU, and the deployment will cost you 7 minutes or so, using up your Worker build time.
+
+Because this is a Rust→WASM Worker (the Workers Builds image does not ship Rust) and the frontend, database id, and migrations are all resolved at build time, the pipeline is encapsulated in two scripts:
+
+- [`scripts/cf-build.sh`](../scripts/cf-build.sh) (**Build** phase) — installs the Rust toolchain, downloads the Web Vault frontend, substitutes the D1 database id, and compiles the Worker.
+- [`scripts/cf-deploy.sh`](../scripts/cf-deploy.sh) (**Deploy** phase) — bootstraps/migrates D1, optionally seeds global domains, then runs `wrangler deploy`.
+
+**No separate `CLOUDFLARE_API_TOKEN` is needed for the deploy itself.** Workers Builds auto-generates a *build token* and uses it as the credential for the deploy phase. Because the D1 migrations run in that same deploy phase (`cf-deploy.sh`), they reuse that one token — you just grant it D1 access once (step 2 below). (The separate daily backup workflow still relies on the `CLOUDFLARE_API_TOKEN` GitHub secret — see the note above.)
+
+### Setup
+
+1. In the Cloudflare dashboard, go to **Workers & Pages → `warden-worker` → Settings → Build**, then **Connect** your GitHub/GitLab repository (production branch: `main`). This auto-generates the build token.
+
+2. **Grant the build token D1 access** (one-time). The auto-generated token includes Workers Scripts / KV / R2 edit, but **not D1**, so migrations would fail with an authorization error. Go to [My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens), edit the token named **"Workers Builds"**, and add a permission row: **Account → D1 → Edit**. (If you'd rather not run migrations in CI, skip this and set `SKIP_D1=1` in step 4 — see the note below.)
+
+3. Set the build commands:
+
+   | Field | Value |
+   |-------|-------|
+   | **Build command** | `bash scripts/cf-build.sh` |
+   | **Deploy command** | `bash scripts/cf-deploy.sh` |
+
+   > `cf-deploy.sh` prepends `$HOME/.cargo/bin` to `PATH` so that `wrangler deploy` can find `cargo`/`worker-build` (installed during the build phase) when it re-runs `wrangler.toml`'s `[build]` step.
+
+4. Add **Build variables** (Settings → Build → *Variables and Secrets*). None are secrets — the deploy credential is the build token from step 2.
+
+   | Name | Required | Description |
+   |------|----------|-------------|
+   | `D1_DATABASE_ID` | yes | Production D1 database id (substituted into `wrangler.toml`) |
+   | `BW_WEB_VERSION` | no | `bw_web_builds` tag (default `v2026.4.1`); set `latest` to track upstream |
+   | `WRANGLER_VERSION` | no | Pinned wrangler (default `4.82.1`) |
+   | `WORKER_BUILD_VERSION` | no | Pinned worker-build (default `0.8.3`; match the `worker` dep in `Cargo.toml`) |
+   | `R2_NAME` | no | R2 bucket name; enables the `ATTACHMENTS_BUCKET` binding |
+   | `SEED_GLOBAL_DOMAINS` | no | `false` to skip seeding global equivalent domains |
+   | `GLOBAL_DOMAINS_URL` | no | Pin a specific `global_domains.json` source |
+   | `SKIP_D1` | no | `1` to skip all D1 bootstrap/migrate/seed steps (deploy still runs) |
+   | `CLOUDFLARE_ACCOUNT_ID` | no | Set only if wrangler cannot infer the account during migrations |
+
+5. Set the runtime **Worker** secrets (these are *not* build variables — set them under the Worker's **Settings → Variables and Secrets**, not the build config): `ALLOWED_EMAILS`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, plus any optional push settings. See step 7 of [CLI Deployment](#cli-deployment).
+
+6. **Push to `main`.** Cloudflare runs `scripts/cf-build.sh` then `scripts/cf-deploy.sh`. Watch progress under the Worker's **Builds** tab.
+
+> [!NOTE]
+> The first build is slow (it compiles the Rust toolchain dependencies and `worker-build` from scratch). Subsequent builds reuse the build cache and are faster.
+
+> [!NOTE]
+> If you set `SKIP_D1=1` (or skip step 2), the Worker still builds and deploys, but D1 migrations are **not** applied automatically — apply them yourself when the schema changes (`npx wrangler d1 migrations apply vault1 --remote`), or run the GitHub Actions `Build` workflow manually.
+
+> [!IMPORTANT]
+> The default `Build` workflow deploys on every push to `main`. If you adopt Workers Builds, **disable that workflow** (repository **Actions** tab → select **Build** → **Disable workflow**, or remove the `push:` trigger in `.github/workflows/push-cloudflare.yaml`) so `main` is not deployed twice. Leave the `Backup D1 Database` workflow enabled — it still runs on its own schedule.
