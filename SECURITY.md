@@ -1,55 +1,65 @@
 # Security Policy
 
-Warden is a self-hosted, Bitwarden-compatible backend for Cloudflare Workers. We take security seriously, but please note this project has not been formally security-audited.
+Warden is a self-hosted, Bitwarden-compatible password manager backend built for Cloudflare Workers.
 
-## Reporting a Vulnerability
+While we take security seriously and follow industry best practices, **this project is maintained by the open-source community and has not been formally audited by professional security firms.** Please use it with an understanding of your own risk tolerance.
 
-**Preferred:** Use GitHub’s private vulnerability reporting (Security tab → “Report a vulnerability”).
+---
 
-**Do not** open a public issue with exploit details.
+## 🛑 How to Report a Vulnerability
 
-When reporting, include:
+If you discover a security flaw, **do not open a public GitHub Issue.** Doing so exposes all users to immediate risk.
 
-- A clear description of the issue and impact.
-- Steps to reproduce (ideally on your own deployment).
-- Affected endpoint(s)/file(s) and any relevant configuration (e.g., `wrangler.toml` ratelimit bindings, Durable Objects offload, R2 attachments).
-- Version/commit SHA and your deployment environment (Workers plan, Wrangler version if relevant).
+* **Preferred Method:** Use GitHub’s private vulnerability reporting feature (Go to the **Security** tab of this repository $\rightarrow$ Click **"Report a vulnerability"**).
 
-## Disclosure Guidelines
+When submitting a report, please include as much detail as possible to help us fix it quickly:
 
-- Please give us a reasonable amount of time to investigate and address the issue before public disclosure.
-- Make a good-faith effort to avoid privacy violations, data destruction, and service disruption.
-- Do not perform denial-of-service testing against the demo instance.
+1. **Description & Impact:** What is the bug, and what could a malicious actor do with it?
+2. **Steps to Reproduce:** A clear guide (or Proof of Concept code) to replicate the issue on a test deployment.
+3. **Environment Details:** The exact version/commit SHA you are running, your Wrangler version, and your Cloudflare Workers plan.
+4. **Configuration:** Mention if specific features are enabled (e.g., Durable Objects offloading, R2 attachments, or Rate Limiting).
 
-## Supported Versions
+### 🤝 Disclosure Guidelines
 
-Security fixes are provided on a best-effort basis for the latest release and the `main` branch. Older versions may not receive security patches.
+* **Give us time:** Please allow us a reasonable window to investigate and patch the issue before making any details public.
+* **Act in good faith:** Avoid privacy violations, data destruction, or interrupting services for others during your testing.
+* **Hands off the Demo:** Do not perform Denial of Service (DoS/DDoS) testing against our public demo instance.
 
-## In Scope
+---
 
-- Backend implementation in `src/` (auth, crypto, handlers, database access).
-- Worker entrypoint and edge concerns in `src/entry.js` (routing, attachment streaming, Durable Objects offload).
-- Wrangler configuration in `wrangler.toml` (bindings, rate limiting, routes).
-- Database schema and migrations (`sql/`, `migrations/`).
-- Deployment tooling and scripts (`docs/`, `scripts/`, GitHub Actions workflows).
-- UI overrides shipped by this repo (e.g., `public/css/`).
+## 🛠️ Security Scope
 
-## Out of Scope / Exclusions
+To help researchers, here is what we can patch versus what is out of our control:
 
-- Issues in upstream Bitwarden clients (mobile/desktop/browser extensions).
-- Issues in the bundled upstream Web Vault build (`bw_web_builds`) that are not caused by this repository’s overrides.
-- Vulnerabilities in the Cloudflare platform itself (Workers/D1/R2/DO); please report those to Cloudflare.
-- Vulnerabilities in unmaintained/outdated deployments.
-- Attacks requiring physical access to a user’s device.
-- Social engineering, spam, and denial-of-service attempts.
+### Supported Versions
 
-## Deployment Hardening (Operators)
+We only provide security patches for the **latest official release** and the active `main` branch. Older versions are considered unsupported.
 
-This project is "self-hosted": **your Cloudflare account is part of your security boundary**. Review the deployment docs and consider the following:
+### What is IN Scope (We can fix this)
 
-- Set strong secrets: `JWT_SECRET` and `JWT_REFRESH_SECRET` (>32 characters, random, unique per environment).
-- Restrict who can register/log in (e.g., `ALLOWED_EMAILS`), and consider disabling open registration.
-- Ensure rate limiting is configured (see `wrangler.toml` `[[ratelimits]]` bindings); missing bindings degrade gracefully and may reduce protection.
-- Treat Cloudflare API tokens as highly sensitive; grant least privilege and rotate when needed.
-- Protect backups and exports (D1 backups, logs) as they may contain sensitive metadata.
+* 🔒 The backend code in `src/` (authentication, cryptography, data handlers, and database queries).
+* 🌐 The Worker entry point logic in `src/entry.js` (routing, attachment streaming, and Durable Objects management).
+* ⚙️ Default configuration templates like `wrangler.toml` (bindings, default rate limits).
+* 🗄️ Database schemas, migrations, deployment scripts, and GitHub Actions workflows.
+* 🎨 Custom UI style overrides provided by this repository (e.g., `public/css/`).
 
+### What is OUT of Scope (We cannot fix this)
+
+* **Official Bitwarden Apps:** Vulnerabilities in upstream Bitwarden clients (mobile apps, desktop apps, browser extensions).
+* **The Web Vault Frontend:** Vulnerabilities inside the bundled `bw_web_builds` code, unless caused directly by our custom modifications.
+* **Cloudflare Infrastructure:** Flaws in the Cloudflare platform itself (Workers, D1, R2, KV, Durable Objects). Please report these directly to Cloudflare.
+* **User-End Attacks:** Attacks that require physical access to a user’s unlocked device, or social engineering/phishing attempts.
+
+---
+
+## 🛡️ Simple Hardening Guide (For Non-Technical Operators)
+
+Because Warden is "self-hosted," **your personal Cloudflare account is the frontline defense for your passwords.** Think of Warden as a secure vault, but *you* are responsible for locking the front door.
+
+Please ensure you follow these essential steps:
+
+* **Generate Strong Master Keys:** When setting up `JWT_SECRET` and `JWT_REFRESH_SECRET`, do not type random words. Use a password generator to create unique, completely random strings of **at least 32 characters**.
+* **Lock Down Registration:** By default, anyone who knows your Worker URL could theoretically register an account. Restrict this by using the `ALLOWED_EMAILS` feature or completely disabling open registration once your own account is created.
+* **Do Not Skip Rate Limiting:** Ensure the `[[ratelimits]]` bindings in `wrangler.toml` are correctly configured. Without them, hackers could try to guess your master password millions of times without being blocked.
+* **Guard Your Cloudflare Tokens:** Treat your Cloudflare API tokens like the keys to your house. Grant them the absolute minimum permissions required to deploy, and rotate them every few months.
+* **Encrypt and Protect Backups:** Your D1 database backups contain your heavily encrypted passwords. While hackers cannot read them without your Master Password, the metadata (like your email and creation dates) is visible. Store these backups in a secure, private location.
