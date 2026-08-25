@@ -18,6 +18,7 @@ Warden aims to solve this problem by leveraging the Cloudflare Workers ecosystem
 * **File Attachments:** Optional Cloudflare KV or R2 storage for attachments.
 * **Bitwarden Send:** Share encrypted text or files via a link.
 * **Device Management:** View and revoke active sessions.
+* **Personal API Key (opt-in, disabled by default):** Set `API_KEY_ENABLED` to `true` to view and rotate it under Settings > Security > Keys and use it with `bw login --apikey`. Off by default because API key logins bypass 2FA.
 * **Live Sync & Push Notifications:** Real-time vault updates via WebSocket and mobile push.
 * **TOTP Support:** Store and generate Time-based One-Time Passwords.
 * **Bitwarden Compatible:** Works with official Bitwarden clients.
@@ -61,6 +62,8 @@ See the [deployment guide](docs/deployment.md) for setup details. R2 may incur a
 * Other Bitwarden advanced features
 
 There are no immediate plans to implement these features. The primary goal of this project is to provide a simple, free, and low-maintenance personal password manager.
+
+Personal API keys are supported but **disabled by default**, because an API key is a long-lived credential and API key logins bypass 2FA. Set `API_KEY_ENABLED` to `true` to enable them; the key can then be viewed or rotated from **Settings > Security > Keys** in the web vault and used with `bw login --apikey`. While disabled, those endpoints return 404 and the `client_credentials` grant is rejected as an unsupported `grant_type`. Organization API keys are not supported.
 
 ## Compatibility
 
@@ -238,6 +241,10 @@ Configure environment variables in `wrangler.toml` under `[vars]`, or set them v
   - Controls showing the registration button in the client UI (server behavior unchanged).
 * **`AUTHENTICATOR_DISABLE_TIME_DRIFT`** (Optional, Default: `false`): 
   - Set to `true` to disable ±1 time step drift for TOTP validation.
+* **`API_KEY_ENABLED`** (Optional, Default: `false`): 
+  - Set to `true` to enable personal API keys: viewing and rotating the key under **Settings > Security > Keys**, and logging in with `bw login --apikey`. 
+  - Disabled by default because API key logins bypass 2FA. While disabled, the view/rotate endpoints return 404 and the `client_credentials` grant is rejected as an unsupported `grant_type`. 
+  - Organization API keys are not supported either way.
 * **`ATTACHMENT_MAX_BYTES`** (Optional): 
   - Max size for individual attachment files. 
   - Example: `104857600` for 100MB.

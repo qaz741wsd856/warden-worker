@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
     equivalent_domains TEXT NOT NULL DEFAULT '[]', -- JSON: Vec<Vec<String>>
     excluded_globals TEXT NOT NULL DEFAULT '[]', -- JSON: Vec<i32> (reserved for future global groups)
     totp_recover TEXT, -- Recovery code for 2FA
+    api_key TEXT, -- Personal API key for the `client_credentials` grant (NULL until requested)
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

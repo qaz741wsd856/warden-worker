@@ -49,6 +49,12 @@ pub fn api_router(env: Env) -> Router {
         .route("/api/accounts/password", post(accounts::post_password))
         // Log out all sessions via security stamp rotation
         .route("/api/accounts/security-stamp", post(accounts::post_sstamp))
+        // Personal API key (used by `bw login --apikey`)
+        .route("/api/accounts/api-key", post(accounts::api_key))
+        .route(
+            "/api/accounts/rotate-api-key",
+            post(accounts::rotate_api_key),
+        )
         // Rotate encryption keys
         .route(
             "/api/accounts/key-management/rotate-user-account-keys",

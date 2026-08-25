@@ -12,11 +12,12 @@ use worker::{D1PreparedStatement, Env};
 use crate::d1_query;
 
 use super::{
-    enforce_ip_rate_limit, get_batch_size, server_password_iterations, two_factor_enabled,
+    api_key_enabled, enforce_ip_rate_limit, get_batch_size, server_password_iterations,
+    two_factor_enabled,
 };
 use crate::{
     auth::Claims,
-    crypto::{generate_salt, hash_password_for_storage},
+    crypto::{generate_api_key, generate_salt, hash_password_for_storage},
     db,
     error::AppError,
     handlers::{attachments, sends},
@@ -279,6 +280,8 @@ pub async fn register(
         equivalent_domains: "[]".to_string(),
         excluded_globals: "[]".to_string(),
         totp_recover: None,
+        // Generated on demand from Settings > Security > Keys, not at registration.
+        api_key: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -1108,4 +1111,100 @@ pub async fn post_sstamp(
     notifications::publish_user_logout((*env).clone(), claims.sub, now, None);
 
     Ok(Json(json!({})))
+}
+
+/// Views (and, when missing or when `rotate` is set, (re)generates) the personal API key.
+/// Both entry points require the master password, like the other sensitive account endpoints.
+///
+/// Opt-in: without API_KEY_ENABLED the endpoints answer 404, so no key is ever
+/// generated and the routes look like they do not exist. The check runs before the
+/// user lookup and before password verification so nothing is observable while off.
+async fn update_api_key(
+    claims: Claims,
+    env: Arc<Env>,
+    payload: PasswordOrOtpData,
+    rotate: bool,
+) -> Result<Json<Value>, AppError> {
+    if !api_key_enabled(&env) {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+
+    let db = db::get_db(&env)?;
+    let user_id = &claims.sub;
+
+    let mut user: User = db
+        .prepare("SELECT * FROM users WHERE id = ?1")
+        .bind(&[user_id.clone().into()])?
+        .first(None)
+        .await
+        .map_err(|_| AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    // Require master password hash (OTP not supported)
+    let provided_hash = payload
+        .master_password_hash
+        .ok_or_else(|| AppError::BadRequest("Missing master password hash".to_string()))?;
+
+    let verification = user.verify_master_password(&provided_hash).await?;
+    if !verification.is_valid() {
+        return Err(AppError::Unauthorized("Invalid password".to_string()));
+    }
+
+    // An empty stored key is treated as "no key" so it can never be used as a credential.
+    let has_api_key = user
+        .api_key
+        .as_deref()
+        .is_some_and(|api_key| !api_key.is_empty());
+
+    if rotate || !has_api_key {
+        let api_key = generate_api_key()?;
+        let now = db::now_string();
+
+        d1_query!(
+            &db,
+            "UPDATE users SET api_key = ?1, updated_at = ?2 WHERE id = ?3",
+            api_key,
+            now,
+            user_id
+        )
+        .map_err(|_| AppError::Database)?
+        .run()
+        .await?;
+
+        user.api_key = Some(api_key);
+        user.updated_at = now;
+    }
+
+    // Same lenient parsing as `revision_date`: a legacy row with an unexpected timestamp
+    // format should not fail the whole request.
+    let revision_date = chrono::DateTime::parse_from_rfc3339(&user.updated_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now())
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+
+    Ok(Json(json!({
+        "apiKey": user.api_key,
+        "revisionDate": revision_date,
+        "object": "apiKey",
+    })))
+}
+
+/// POST /api/accounts/api-key - Returns the personal API key, generating it on first view
+#[worker::send]
+pub async fn api_key(
+    claims: Claims,
+    State(env): State<Arc<Env>>,
+    Json(payload): Json<PasswordOrOtpData>,
+) -> Result<Json<Value>, AppError> {
+    update_api_key(claims, env, payload, false).await
+}
+
+/// POST /api/accounts/rotate-api-key - Replaces the personal API key with a fresh one
+#[worker::send]
+pub async fn rotate_api_key(
+    claims: Claims,
+    State(env): State<Arc<Env>>,
+    Json(payload): Json<PasswordOrOtpData>,
+) -> Result<Json<Value>, AppError> {
+    update_api_key(claims, env, payload, true).await
 }
