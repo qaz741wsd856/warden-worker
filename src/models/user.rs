@@ -36,6 +36,13 @@ pub struct User {
     #[serde(default = "default_json_array_string")]
     pub excluded_globals: String,
     pub totp_recover: Option<String>, // Recovery code for 2FA
+    /// Personal API key for the `client_credentials` grant (`bw login --apikey`).
+    ///
+    /// `default` is required because users are loaded with `SELECT *` + `serde_json::from_value`:
+    /// a worker deployed before migration `0014` is applied would otherwise fail to parse every
+    /// user row. `skip_serializing` keeps this credential out of any struct-level serialization.
+    #[serde(default, skip_serializing)]
+    pub api_key: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

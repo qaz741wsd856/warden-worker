@@ -316,7 +316,92 @@ pub fn generate_recovery_code() -> Result<String, AppError> {
     Ok(base32_encode(&bytes.to_vec()))
 }
 
+/// Alphabet used for personal API keys ([A-Za-z0-9], 62 symbols).
+const API_KEY_ALPHABET: &[u8; 62] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+/// Length of a personal API key, in characters (~178 bits of entropy).
+const API_KEY_LENGTH: usize = 30;
+/// Largest multiple of 62 that fits in a byte (256 - 256 % 62). Bytes at or above this
+/// value are rejected so that the modulo below stays unbiased.
+const API_KEY_REJECT_FROM: u8 = 248;
+
+/// Maps uniformly random bytes onto the API key alphabet using rejection sampling.
+/// Returns `None` when `bytes` did not contain enough accepted values.
+fn map_api_key_bytes(bytes: &[u8], out: &mut String, length: usize) -> bool {
+    for byte in bytes {
+        if out.len() == length {
+            return true;
+        }
+        if *byte >= API_KEY_REJECT_FROM {
+            continue;
+        }
+        out.push(API_KEY_ALPHABET[(*byte % 62) as usize] as char);
+    }
+
+    out.len() == length
+}
+
+/// Generates a personal API key (30 alphanumeric characters, ~178 bits of entropy).
+/// Matches Vaultwarden's `generate_api_key`.
+pub fn generate_api_key() -> Result<String, AppError> {
+    debug_assert_eq!(API_KEY_ALPHABET.len(), 62);
+    debug_assert_eq!(API_KEY_REJECT_FROM as usize, 256 - 256 % 62);
+
+    let crypto = get_crypto()?;
+    let mut key = String::with_capacity(API_KEY_LENGTH);
+
+    // Rejection sampling discards ~3% of the bytes, so a handful of rounds is plenty;
+    // the bound only exists to avoid an unbounded loop if the RNG misbehaves.
+    for _ in 0..16 {
+        let bytes = Uint8Array::new_with_length(API_KEY_LENGTH as u32);
+        crypto
+            .get_random_values_with_array_buffer_view(&bytes)
+            .map_err(|e| AppError::Crypto(format!("Failed to generate API key: {:?}", e)))?;
+
+        if map_api_key_bytes(&bytes.to_vec(), &mut key, API_KEY_LENGTH) {
+            return Ok(key);
+        }
+    }
+
+    Err(AppError::Crypto(
+        "Failed to generate API key: insufficient random data".to_string(),
+    ))
+}
+
 /// Constant-time string comparison wrapper.
 pub fn ct_eq(a: &str, b: &str) -> bool {
     constant_time_eq(a.as_bytes(), b.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_api_key_bytes, API_KEY_ALPHABET, API_KEY_REJECT_FROM};
+
+    #[test]
+    fn api_key_alphabet_is_unbiased() {
+        assert_eq!(API_KEY_ALPHABET.len(), 62);
+        assert_eq!(API_KEY_REJECT_FROM as usize, 256 - 256 % 62);
+        assert!(API_KEY_ALPHABET.iter().all(u8::is_ascii_alphanumeric));
+    }
+
+    #[test]
+    fn api_key_mapper_rejects_biasing_bytes() {
+        let mut key = String::new();
+        assert!(!map_api_key_bytes(&[248, 249, 250, 255], &mut key, 2));
+        assert!(key.is_empty());
+    }
+
+    #[test]
+    fn api_key_mapper_maps_accepted_bytes() {
+        let mut key = String::new();
+        assert!(map_api_key_bytes(&[0, 61, 62, 247], &mut key, 4));
+        assert_eq!(key, "A9A9");
+    }
+
+    #[test]
+    fn api_key_mapper_stops_at_requested_length() {
+        let mut key = String::new();
+        assert!(map_api_key_bytes(&[0, 0, 0], &mut key, 2));
+        assert_eq!(key, "AA");
+    }
 }

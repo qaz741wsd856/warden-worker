@@ -113,6 +113,19 @@ pub(crate) fn allow_totp_drift(env: &worker::Env) -> bool {
         .unwrap_or(true)
 }
 
+/// Whether personal API keys are enabled (view/rotate endpoints + the
+/// `client_credentials` grant). Controlled via API_KEY_ENABLED; opt-in.
+///
+/// Defaults to false: an API key is a long-lived credential that bypasses 2FA,
+/// so it only exists on a deployment when the operator asks for it.
+pub(crate) fn api_key_enabled(env: &worker::Env) -> bool {
+    env.var("API_KEY_ENABLED")
+        .ok()
+        .map(|value| value.to_string().to_lowercase())
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
 /// Whether to prefer fetching cipher JSON rows and building arrays in the Worker.
 ///
 /// This avoids D1/SQLite `SQLITE_TOOBIG` errors when using `json_group_array` on large vaults.

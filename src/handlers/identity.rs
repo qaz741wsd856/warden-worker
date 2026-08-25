@@ -26,7 +26,8 @@ use crate::{
     db,
     error::AppError,
     handlers::{
-        allow_totp_drift, enforce_ip_rate_limit, enforce_rate_limit, server_password_iterations,
+        allow_totp_drift, api_key_enabled, enforce_ip_rate_limit, enforce_rate_limit,
+        server_password_iterations,
         twofactor::{is_twofactor_enabled, list_user_twofactors},
     },
     models::{
@@ -40,6 +41,8 @@ use crate::{
 };
 
 const PASSWORD_SCOPE: &str = "api offline_access";
+/// Scope used by the `client_credentials` (personal API key) grant.
+const API_KEY_SCOPE: &str = "api";
 const REMEMBER_TOKEN_ISSUER: &str = "warden-worker-device-remember";
 
 fn login_missing_user_delay_ms(env: &Env) -> u64 {
@@ -92,6 +95,8 @@ pub struct TokenRequest {
     refresh_token: Option<String>,
     #[serde(rename = "client_id", alias = "clientId")]
     client_id: Option<String>,
+    #[serde(rename = "client_secret", alias = "clientSecret")]
+    client_secret: Option<String>,
     send_id: Option<String>,
     password_hash_b64: Option<String>,
     scope: Option<String>,
@@ -145,8 +150,9 @@ pub struct TokenResponse {
     expires_in: i64,
     #[serde(rename = "token_type")]
     token_type: String,
-    #[serde(rename = "refresh_token")]
-    refresh_token: String,
+    // API key logins do not get a refresh token: clients repeat the `client_credentials` flow.
+    #[serde(rename = "refresh_token", skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
     #[serde(rename = "scope")]
     scope: String,
     #[serde(rename = "Key")]
@@ -182,15 +188,27 @@ pub struct UserDecryptionOptions {
     pub object: String,
 }
 
+/// `sub` of the signed refresh JWT. Only grants that issue refresh tokens appear here.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 enum RefreshAuthMethod {
     Password,
 }
 
-impl RefreshAuthMethod {
+/// How the caller authenticated on this token request. Drives the granted scope and
+/// whether a refresh token is issued; it is not part of any signed token payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginAuthMethod {
+    Password,
+    UserApiKey,
+}
+
+impl LoginAuthMethod {
     fn scope(self) -> &'static str {
-        PASSWORD_SCOPE
+        match self {
+            Self::Password => PASSWORD_SCOPE,
+            Self::UserApiKey => API_KEY_SCOPE,
+        }
     }
 
     fn scope_vec(self) -> Vec<String> {
@@ -198,6 +216,11 @@ impl RefreshAuthMethod {
             .split_whitespace()
             .map(str::to_string)
             .collect()
+    }
+
+    /// API key logins are one-shot; upstream expects the client to redo the flow instead.
+    fn issues_refresh_token(self) -> bool {
+        matches!(self, Self::Password)
     }
 }
 
@@ -242,6 +265,26 @@ fn validate_password_scope(value: Option<&str>, required: bool) -> Result<(), Ap
 
 fn parse_password_device_request(payload: &TokenRequest) -> Result<DeviceAuthRequest, AppError> {
     validate_password_scope(payload.scope.as_deref(), true)?;
+
+    Ok(DeviceAuthRequest {
+        client_id: required_field(payload.client_id.as_deref(), "client_id")?,
+        identifier: required_field(payload.device_identifier.as_deref(), "device_identifier")?,
+        name: required_field(payload.device_name.as_deref(), "device_name")?,
+        r#type: parse_required_device_type(payload.device_type.as_deref(), "device_type")?,
+    })
+}
+
+/// The personal API key grant only supports the user scope; `api.organization` (upstream's
+/// org API keys) is deliberately not implemented in this fork.
+fn validate_api_key_scope(value: Option<&str>) -> Result<(), AppError> {
+    match optional_field(value) {
+        Some(scope) if scope == API_KEY_SCOPE => Ok(()),
+        _ => Err(AppError::BadRequest("Scope not supported".to_string())),
+    }
+}
+
+fn parse_api_key_device_request(payload: &TokenRequest) -> Result<DeviceAuthRequest, AppError> {
+    validate_api_key_scope(payload.scope.as_deref())?;
 
     Ok(DeviceAuthRequest {
         client_id: required_field(payload.client_id.as_deref(), "client_id")?,
@@ -357,7 +400,7 @@ async fn authenticate_password_grant(
     })
 }
 
-async fn load_user_by_id(db: &crate::db::Db, user_id: &str) -> Result<User, AppError> {
+async fn find_user_by_id(db: &crate::db::Db, user_id: &str) -> Result<Option<User>, AppError> {
     let user_value: Option<Value> = db
         .prepare("SELECT * FROM users WHERE id = ?1")
         .bind(&[user_id.into()])?
@@ -365,8 +408,15 @@ async fn load_user_by_id(db: &crate::db::Db, user_id: &str) -> Result<User, AppE
         .await
         .map_err(|_| AppError::Database)?;
 
-    let user_value = user_value.ok_or_else(|| AppError::BadRequest("invalid_grant".to_string()))?;
-    serde_json::from_value(user_value).map_err(|_| AppError::Internal)
+    user_value
+        .map(|user_value| serde_json::from_value(user_value).map_err(|_| AppError::Internal))
+        .transpose()
+}
+
+async fn load_user_by_id(db: &crate::db::Db, user_id: &str) -> Result<User, AppError> {
+    find_user_by_id(db, user_id)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("invalid_grant".to_string()))
 }
 
 async fn maybe_upgrade_password_hash(
@@ -483,11 +533,11 @@ fn generate_tokens_and_response(
     client_id: &str,
     env: &Arc<Env>,
     two_factor_token: Option<String>,
+    auth_method: LoginAuthMethod,
 ) -> Result<Json<TokenResponse>, AppError> {
     let now = Utc::now();
     let expires_in = Duration::hours(1);
     let time_options = jwt_time_options();
-    let auth_method = RefreshAuthMethod::Password;
 
     let access_claims = JwtClaims::new(Claims {
         sub: user.id.clone(),
@@ -513,18 +563,24 @@ fn generate_tokens_and_response(
         .token(&Header::empty(), &access_claims, &access_key)
         .map_err(|_| AppError::Crypto("Failed to create access token".to_string()))?;
 
-    let refresh_claims = JwtClaims::new(RefreshClaims {
-        sub: auth_method,
-        device_token: device.refresh_token.clone(),
-        sstamp: user.security_stamp.clone(),
-    })
-    .set_duration_and_issuance(&time_options, Duration::days(30))
-    .set_not_before(now);
-    let jwt_refresh_secret = env.secret("JWT_REFRESH_SECRET")?.to_string();
-    let refresh_key = Hs256Key::new(jwt_refresh_secret.as_bytes());
-    let refresh_token = jwt_compact::alg::Hs256
-        .token(&Header::empty(), &refresh_claims, &refresh_key)
-        .map_err(|_| AppError::Crypto("Failed to create refresh token".to_string()))?;
+    let refresh_token = if auth_method.issues_refresh_token() {
+        let refresh_claims = JwtClaims::new(RefreshClaims {
+            sub: RefreshAuthMethod::Password,
+            device_token: device.refresh_token.clone(),
+            sstamp: user.security_stamp.clone(),
+        })
+        .set_duration_and_issuance(&time_options, Duration::days(30))
+        .set_not_before(now);
+        let jwt_refresh_secret = env.secret("JWT_REFRESH_SECRET")?.to_string();
+        let refresh_key = Hs256Key::new(jwt_refresh_secret.as_bytes());
+        Some(
+            jwt_compact::alg::Hs256
+                .token(&Header::empty(), &refresh_claims, &refresh_key)
+                .map_err(|_| AppError::Crypto("Failed to create refresh token".to_string()))?,
+        )
+    } else {
+        None
+    };
 
     let has_master_password = !user.master_password_hash.is_empty();
     let master_password_unlock = if has_master_password {
@@ -763,6 +819,7 @@ pub async fn token(
                 &device_request.client_id,
                 &env,
                 two_factor_remember_token,
+                LoginAuthMethod::Password,
             )
             .map(IntoResponse::into_response)
         }
@@ -811,8 +868,98 @@ pub async fn token(
 
             let client_id = optional_field(payload.client_id.as_deref())
                 .unwrap_or_else(|| "undefined".to_string());
-            generate_tokens_and_response(user, &device, &client_id, &env, None)
-                .map(IntoResponse::into_response)
+            generate_tokens_and_response(
+                user,
+                &device,
+                &client_id,
+                &env,
+                None,
+                LoginAuthMethod::Password,
+            )
+            .map(IntoResponse::into_response)
+        }
+        "client_credentials" => {
+            // Personal API key login (`bw login --apikey`). Port of Vaultwarden's
+            // `user_api_key_login`; organization API keys are not supported by this fork.
+            //
+            // Opt-in: without API_KEY_ENABLED this answers exactly like the unknown-grant
+            // fallback below, before the rate limiters and before touching the database,
+            // so the grant is indistinguishable from one that was never implemented.
+            if !api_key_enabled(env.as_ref()) {
+                return Err(AppError::BadRequest("Unsupported grant_type".to_string()));
+            }
+
+            let client_id = required_field(payload.client_id.as_deref(), "client_id")?;
+
+            enforce_rate_limit(
+                env.as_ref(),
+                "LOGIN_RATE_LIMITER",
+                format!("login:{}", client_id.to_lowercase()),
+                "Too many login attempts. Please try again later.",
+            )
+            .await?;
+            enforce_ip_rate_limit(
+                env.as_ref(),
+                &headers,
+                "LOGIN_RATE_LIMITER",
+                "login-ip",
+                "Too many login attempts. Please try again later.",
+            )
+            .await?;
+
+            let device_request = parse_api_key_device_request(&payload)?;
+            // Validated before the user lookup (as upstream does) so a missing
+            // client_secret cannot distinguish an existing user from an unknown one.
+            let client_secret = required_field(payload.client_secret.as_deref(), "client_secret")?;
+
+            let client_user_id = client_id
+                .strip_prefix("user.")
+                .filter(|user_id| !user_id.is_empty())
+                .ok_or_else(|| AppError::BadRequest("Malformed client_id".to_string()))?;
+
+            let user = match find_user_by_id(&db, client_user_id).await? {
+                Some(user) => user,
+                None => {
+                    Delay::from(StdDuration::from_millis(login_missing_user_delay_ms(
+                        env.as_ref(),
+                    )))
+                    .await;
+                    return Err(AppError::Unauthorized("Invalid client_id".to_string()));
+                }
+            };
+
+            // Check the API key. Note that API key logins bypass 2FA (as upstream does).
+            // An empty stored key never authenticates.
+            let api_key_valid = user
+                .api_key
+                .as_deref()
+                .filter(|api_key| !api_key.is_empty())
+                .is_some_and(|api_key| ct_eq(api_key, &client_secret));
+            if !api_key_valid {
+                return Err(AppError::Unauthorized(
+                    "Incorrect client_secret".to_string(),
+                ));
+            }
+
+            let mut device = Device::get_or_create(
+                &db,
+                device_request.identifier,
+                user.id.clone(),
+                device_request.name,
+                device_request.r#type,
+            )
+            .await?;
+            device.touch(&db).await?;
+
+            generate_tokens_and_response(
+                user,
+                &device,
+                &device_request.client_id,
+                &env,
+                None,
+                LoginAuthMethod::UserApiKey,
+            )
+            .map(IntoResponse::into_response)
         }
         "send_access" => generate_send_access_token_response(env.as_ref(), &db, &headers, &payload)
             .await
