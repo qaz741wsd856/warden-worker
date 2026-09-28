@@ -1,0 +1,40 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    if: ${{ github.event.repository.fork }}
+    name: Sync From Upstream
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Sync Changes
+        id: sync
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
+        with:
+          upstream_sync_repo: qaz741wsd856/warden-worker
+          upstream_sync_branch: main
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+          test_mode: false
+
+      - name: Trigger Deployment
+        if: steps.sync.outputs.has_new_commits == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'Deploy After Sync',
+            });
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
