@@ -86,6 +86,15 @@ run_worker_first = ["/api/*", "/identity/*", "/notifications/*"]
 # PUSH_RELAY_URI = "https://push.bitwarden.com"
 # PUSH_IDENTITY_URI = "https://identity.bitwarden.com"
 
+# Email delivery via Resend API (optional)
+# Set RESEND_API_KEY as a secret (e.g. `wrangler secret put RESEND_API_KEY`).
+# Configure MAIL_FROM with your verified domain address (e.g. `no-reply@example.com`).
+# MAIL_FROM_NAME is optional (defaults to "Vaultwarden").
+# If configured, password hint requests will be emailed via Resend instead of
+# being returned directly in the response.
+# MAIL_FROM = "no-reply@example.com"
+# MAIL_FROM_NAME = "Vaultwarden"
+
 # Number of days to keep soft-deleted items before auto-purging.
 # Defaults to 30 days if not set. Set to 0 to disable auto-purge.
 # TRASH_AUTO_DELETE_DAYS = "30"

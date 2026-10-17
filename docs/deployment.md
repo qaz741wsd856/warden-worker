@@ -111,6 +111,11 @@ This page covers the available deployment paths. Pick the one that fits your wor
      `PUSH_INSTALLATION_ID`, `PUSH_INSTALLATION_KEY` as secret variables.  
      See [Mobile Push Notifications](../README.md#mobile-push-notifications-optional) for more details.
 
+   **Optional email delivery via Resend:**  
+     `RESEND_API_KEY` as a secret variable;  
+     `MAIL_FROM` (and optional `MAIL_FROM_NAME`) as text variables.  
+     See [Email Delivery](../README.md#email-delivery-optional) for more details.
+
 8. **Configure your Bitwarden client:**
 
    In your Bitwarden client, go to the self-hosted login screen and enter the URL of your deployed worker.
@@ -207,6 +212,9 @@ If you skip seeding, `/api/settings/domains` and `/api/sync` will return `global
    - Optional mobile push settings:
      `PUSH_ENABLED=true`, `PUSH_RELAY_URI`, `PUSH_IDENTITY_URI`, `PUSH_INSTALLATION_ID`, `PUSH_INSTALLATION_KEY`.  
      See [Mobile Push Notifications](../README.md#mobile-push-notifications-optional) for more details.
+   - Optional email delivery settings:
+     `RESEND_API_KEY` as a secret variable; `MAIL_FROM` (and optional `MAIL_FROM_NAME`) as text variables.  
+     See [Email Delivery](../README.md#email-delivery-optional) for more details.
 
 
 > [!IMPORTANT]

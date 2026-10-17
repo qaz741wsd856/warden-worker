@@ -216,10 +216,32 @@ Optionally, you can override the default relay endpoints by setting `PUSH_RELAY_
 
 For detailed configuration and troubleshooting, see the [Vaultwarden wiki on push notifications](https://github.com/dani-garcia/vaultwarden/wiki/Enabling-Mobile-Client-push-notification).
 
+### Email Delivery (Optional)
+
+By default, this project does not deliver emails; when requesting a master password hint (`/api/accounts/password-hint`), the hint is returned directly in the client response as an alert.
+
+You can optionally enable email delivery via the **[Resend](https://resend.com)** API (free tier includes 3,000 emails/month). When enabled, master password hint requests will be delivered directly to the user's registered email address, and the API returns a standard `200 OK` response to the Bitwarden client.
+
+**Setup:**
+
+1. Sign up at [Resend](https://resend.com) and add your custom sending domain.
+2. Add the required DNS records (DKIM and SPF) to your domain in Cloudflare.
+3. Create an API key in Resend with sending permissions.
+4. Set the following environment variables:
+   - `RESEND_API_KEY` (Secret): Your Resend API key (`re_...`).
+   - `MAIL_FROM` (Variable or Secret): The verified sender address (e.g. `no-reply@yourdomain.com`).
+   - `MAIL_FROM_NAME` (Optional Variable): Display name for the sender (defaults to `Vaultwarden`).
+
+If `RESEND_API_KEY` or `MAIL_FROM` is not configured, or if the email provider returns an error, the worker gracefully falls back to returning the hint directly in the client response.
+
 ### Other Environment Variables
 
 Configure environment variables in `wrangler.toml` under `[vars]`, or set them via Cloudflare Dashboard:
 
+* **`MAIL_FROM`** (Optional):
+  - Sender address for transactional emails (e.g., `no-reply@example.com`). Required if `RESEND_API_KEY` is set.
+* **`MAIL_FROM_NAME`** (Optional, Default: `Vaultwarden`):
+  - Sender display name for transactional emails.
 * **`BASE_URL`** (Optional):
   - Overrides the extracted base URL for up/down URLs for files.
   - Format: Include HTTPS protocol, domain, and port (if using non-443 reverse proxy). Do not include any trailing path.

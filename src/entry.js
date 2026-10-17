@@ -119,6 +119,109 @@ function shouldOffloadToHeavyDo(request, url) {
   return methods.has(method);
 }
 
+function escapeHtml(str) {
+  return String(str).replace(/[&<>'"]/g, (tag) =>
+    ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "'": "&#39;",
+      '"': "&quot;",
+    }[tag] || tag)
+  );
+}
+
+function formatSenderAddress(email, name) {
+  if (!email) return null;
+  const trimmedEmail = email.trim();
+  if (trimmedEmail.includes("<") && trimmedEmail.includes(">")) {
+    return trimmedEmail;
+  }
+  const fromName = name?.trim() || "Vaultwarden";
+  return `${fromName} <${trimmedEmail}>`;
+}
+
+async function handlePasswordHint(request, env, ctx) {
+  const clonedRequest = request.clone();
+  const worker = new RustWorker(ctx, env);
+  const res = await worker.fetch(request);
+
+  const resendApiKey = env.RESEND_API_KEY;
+  const mailFrom = env.MAIL_FROM;
+
+  // Optional: only send email if RESEND_API_KEY and MAIL_FROM are configured
+  if (!resendApiKey || !mailFrom) {
+    return res;
+  }
+
+  // If rate limit exceeded or server error, return original response
+  if (res.status !== 400) {
+    return res;
+  }
+
+  try {
+    const data = await res.clone().json();
+    const msg = data?.error || data?.message || "";
+    const prefix = "Your password hint is: ";
+
+    if (msg.startsWith(prefix)) {
+      const hint = msg.slice(prefix.length).trim();
+      let reqBody = null;
+      try {
+        reqBody = await clonedRequest.json();
+      } catch {}
+      const recipientEmail = reqBody?.email;
+
+      if (recipientEmail && hint) {
+        const sender = formatSenderAddress(mailFrom, env.MAIL_FROM_NAME);
+        const emailPayload = {
+          from: sender,
+          to: [recipientEmail],
+          subject: "Your Bitwarden Master Password Hint",
+          text: `You (or someone) requested the master password hint for your account.\n\nYour master password hint is:\n${hint}\n\nIf you did not request this hint, you can safely ignore this email.`,
+          html: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e1e4e8; border-radius: 8px;">
+  <h2 style="color: #175ddc; margin-top: 0;">Master Password Hint</h2>
+  <p style="color: #333; font-size: 14px; line-height: 1.5;">You (or someone) requested the master password hint for your vault account.</p>
+  <div style="background-color: #f6f8fa; border: 1px solid #d1d5da; border-radius: 6px; padding: 12px 16px; margin: 18px 0; font-family: monospace; font-size: 16px; color: #24292e; word-break: break-all;">
+    ${escapeHtml(hint)}
+  </div>
+  <p style="color: #586069; font-size: 12px; margin-top: 24px; border-top: 1px solid #eaecef; padding-top: 12px;">If you did not request this hint, you can safely ignore this email.</p>
+</div>`,
+        };
+
+        const resendRes = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(emailPayload),
+        });
+
+        if (resendRes.ok) {
+          return new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        } else {
+          const errText = await resendRes.text();
+          console.error("Resend API error:", resendRes.status, errText);
+          return res;
+        }
+      }
+    } else if (msg === "Sorry, you have no password hint...") {
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  } catch (err) {
+    console.error("handlePasswordHint error:", err);
+  }
+
+  return res;
+}
+
 // Main fetch handler
 export default {
   async fetch(request, env, ctx) {
@@ -127,6 +230,10 @@ export default {
     url.pathname = normalizePathname(url.pathname);
     request = new Request(url.toString(), request);
     const method = (request.method || "GET").toUpperCase();
+
+    if (url.pathname === "/api/accounts/password-hint" && method === "POST") {
+      return handlePasswordHint(request, env, ctx);
+    }
 
     if (
       env.NOTIFY_DO &&
