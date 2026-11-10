@@ -71,6 +71,7 @@ pub async fn config(
             "pm-19148-innovation-archive": true,
             "cxp-import-mobile": true,
             "cxp-export-mobile": true,
+            "windows-native-credential-sync": true,
         },
         // Not supported right now; clients use this to detect servers that require
         // additional work to establish a connection.
