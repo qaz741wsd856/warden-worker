@@ -80,6 +80,14 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
     console_error_panic_hook::set_once();
     let _ = console_log::init_with_level(log::Level::Debug);
 
+    run_scheduled_purges(&env).await;
+}
+
+/// Runs every cron-triggered cleanup task.
+///
+/// Called from the `scheduled` handler (fallback) and from `HeavyDo` (preferred, since the
+/// Durable Object has a much larger CPU budget than a Free plan Worker invocation).
+pub(crate) async fn run_scheduled_purges(env: &Env) {
     fn log_purge_result(name: &str, result: Result<u32, worker::Error>) {
         match result {
             Ok(count) => log::info!("Purge {name} completed: {count} record(s) removed"),
@@ -89,22 +97,22 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
 
     log_purge_result(
         "stale pending attachments",
-        handlers::purge::purge_stale_pending_attachments(&env).await,
+        handlers::purge::purge_stale_pending_attachments(env).await,
     );
     log_purge_result(
         "soft-deleted ciphers",
-        handlers::purge::purge_deleted_ciphers(&env).await,
+        handlers::purge::purge_deleted_ciphers(env).await,
     );
     log_purge_result(
         "stale pending sends",
-        handlers::purge::purge_stale_pending_sends(&env).await,
+        handlers::purge::purge_stale_pending_sends(env).await,
     );
     log_purge_result(
         "expired sends",
-        handlers::purge::purge_expired_sends(&env).await,
+        handlers::purge::purge_expired_sends(env).await,
     );
     log_purge_result(
         "expired auth requests",
-        handlers::purge::purge_expired_auth_requests(&env).await,
+        handlers::purge::purge_expired_auth_requests(env).await,
     );
 }

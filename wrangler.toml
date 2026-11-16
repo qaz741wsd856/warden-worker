@@ -103,6 +103,14 @@ run_worker_first = ["/api/*", "/identity/*", "/notifications/*"]
 # Defaults to 300 seconds (5 minutes) if not set.
 # ATTACHMENT_TTL_SECS = "300"
 
+# Production logs, so per-request CPU time and `exceededCpu` outcomes are visible in
+# Workers & Pages -> warden-worker -> Logs / Observability.
+[observability]
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
 # Cron triggers for scheduled tasks
 # Runs daily at 03:00 UTC to purge soft-deleted ciphers
 [triggers]
