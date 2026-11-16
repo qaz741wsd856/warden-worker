@@ -83,6 +83,12 @@ async function getHeavyDoShardKey(request, url) {
 // All routes offloaded to HEAVY_DO (centralized, aligned with src/router.rs).
 // Keyed by path, with allowed methods to avoid accidental over-routing.
 const HEAVY_DO_ROUTE_METHODS = new Map([
+  // Full vault sync / cipher list: the response carries the whole vault as one large JSON
+  // string, which is copied D1 -> WASM -> JS. On larger vaults this regularly costs more than
+  // the Free plan's 10ms CPU budget, so run it inside the DO.
+  ["/api/sync", new Set(["GET"])],
+  ["/api/ciphers", new Set(["GET"])],
+
   // Import
   ["/api/ciphers/import", new Set(["POST"])],
 
@@ -175,7 +181,21 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // Pass scheduled events to Rust WASM
+    // Cron runs in a cold isolate and does several D1 round-trips plus JSON work,
+    // which can exceed the Free plan's 10ms CPU budget. Run it inside HEAVY_DO when available.
+    if (env.HEAVY_DO) {
+      const id = env.HEAVY_DO.idFromName("internal:scheduled");
+      const stub = env.HEAVY_DO.get(id);
+      const resp = await stub.fetch("https://heavy-do.internal/__internal/scheduled", {
+        method: "POST",
+      });
+      if (!resp.ok) {
+        console.error(`HEAVY_DO scheduled run failed: ${resp.status} ${await resp.text()}`);
+      }
+      return;
+    }
+
+    // Fallback: run scheduled purges in the main Worker.
     const worker = new RustWorker(ctx, env);
     return worker.scheduled(event);
   },

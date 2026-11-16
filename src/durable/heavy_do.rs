@@ -28,6 +28,13 @@ impl DurableObject for HeavyDo {
         // Keep fields used to avoid "unused" warnings even if we don't currently rely on them.
         let _ = &self.state;
 
+        // Internal cron entry point. Only reachable through a DO stub: the public Worker never
+        // forwards this path (it is not in the offload list in src/entry.js).
+        if req.method() == worker::Method::Post && req.path() == "/__internal/scheduled" {
+            crate::run_scheduled_purges(&self.env).await;
+            return Response::ok("ok");
+        }
+
         // Convert worker::Request -> worker::HttpRequest so we can reuse axum Router.
         let http_req: HttpRequest = req.try_into()?;
 
